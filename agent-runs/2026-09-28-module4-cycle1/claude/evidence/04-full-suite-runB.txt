@@ -1,0 +1,328 @@
+
+> aline-voice-backend@1.0.0 test
+> node test-mra.js && node test-runtime.js && node test-release.js
+
+
+═══ CLASSIFIER TESTS ═══
+
+Weight Assignment:
+  ✓ W1: "hey" → noise
+  ✓ W1: "what's the weather like" → noise
+  ✓ W3: "I went to the store today" → context
+  ✓ W8: "I feel so tired and drained" → physiology
+  ✓ W13: "My ex cheated and I still think about it" → sociology
+  ✓ W21: "I'm afraid I'll end up alone like my mother" → psychology + sociology
+  ✓ Covenant depth: "I never told anyone this but as a kid my father..." → W21
+
+Mood Detection:
+  ✓ Celebration: "I got the job!" → JOYFUL
+  ✓ Emotional: "I feel so lost" → CONFIDANTE
+  ✓ Playful: "you're so beautiful" → WARM_PLAYFUL
+  ✓ analyzeMessage surfaces mood + resistance alongside weight
+
+Resistance Detection:
+  ✓ Critical deflection: "I don't want to talk about that"
+  ✓ Exhaustion: "I'm so exhausted"
+
+Length Budget (successor to removed maxTokens contract):
+  ✓ W21 length constraint is the tightest — near-silence
+  ✓ Length ceiling tightens monotonically as weight rises
+  ✓ W1 length constraint still imposes concision
+
+═══ INVARIANT GATE TESTS ═══
+
+NEVER ABANDONS:
+  ✓ Blocks therapist referral
+  ✓ Blocks "I'm just an AI" disclaimer
+  ✓ Blocks crisis hotline reference
+  ✓ Passes clean response
+
+NEVER JUDGES:
+  ✓ Blocks "you should"
+  ✓ Blocks moral assessment
+  ✓ Passes non-judgmental response
+
+NEVER NARRATES:
+  ✓ Blocks "I remember you told me"
+  ✓ Blocks "you mentioned"
+  ✓ Blocks "from our previous conversation"
+  ✓ Passes response without narration
+
+NEVER FILLS (W8+):
+  ✓ Flags verbose W21 response
+  ✓ Verbose W21 response escalates to regeneration
+  ✓ Passes brief W21 response
+  ✓ Does not apply to W3
+
+ALWAYS CALIBRATES:
+  ✓ Flags cheerful response to grief
+  ✓ Passes calibrated grief response
+
+═══ PROMPT BUILDER TESTS ═══
+
+  ✓ W21 prompt includes COVENANT calibration
+  ✓ W3 prompt does not include COVENANT calibration
+  ✓ W21 prompt carries the tightest length constraint
+  ✓ Regeneration constraints are injected when supplied
+  ✓ Celebration prompt includes energy match
+  ✓ Playful prompt includes playful directive
+
+═══ ABT LOGLINE TESTS ═══
+
+  ✓ W1 logline describes drift opportunity
+  ✓ W21 logline describes covenant
+  ✓ Logline returns the And/But/Therefore object contract
+
+═══ CRISIS OVERRIDE TESTS ═══
+
+Activation:
+  ✓ W21 + explicit crisis language activates override
+  ✓ W21 without crisis language does NOT activate
+  ✓ Lower weights do NOT activate
+  ✓ External attribution is excluded despite W21 + crisis language
+
+Suffix handling:
+  ✓ Missing 988 produces the expected crisisSuffix
+  ✓ Existing 988 is not duplicated
+  ✓ CONTRACT: crisisSuffix is returned SEPARATELY from modifiedResponse
+
+Malformed input:
+  ✓ Null input fails gracefully
+  ✓ Empty object input fails gracefully
+  ✓ Undefined input does not throw
+
+═══════════════════════════════════════════
+RESULTS: 52 passed, 0 failed out of 52 tests
+ALL TESTS PASSED ✓
+═══════════════════════════════════════════
+
+
+═══ RUNTIME: EXPLICIT CRISIS ═══
+
+  ✓ suffix text frame received exactly once
+  ✓ received text === response + suffix
+  ✓ suffix TTS requested exactly once
+  ✓ suffix TTS used the aline voice
+  ✓ suffix is the last TTS request
+  ✓ suffix frame precedes response_complete
+  ✓ ordinary response produced audio (0xAA)
+  ✓ CRISIS SUFFIX itself produced audio (0xBB)
+  ✓ suffix AUDIO reached the socket before response_complete
+  ✓ no zero-length audio frames delivered
+  ✓ conversationHistory === text the member received
+  ✓ history retains the crisis referral
+  ✓ history fingerprint matches received text (independent of request replay)
+  ✓ telemetry: crisisActivated
+  ✓ telemetry: crisisTextSent
+  ✓ telemetry: crisisAudioStreamed
+
+═══ RUNTIME: CLOSED SOCKET BEFORE SUFFIX ═══
+
+  ✓ no suffix frame received on a closed socket
+  ✓ telemetry: crisisTextSent FALSE — no false send claim
+  ✓ telemetry: crisisAudioStreamed FALSE
+  ✓ history snapshot captured
+  ✓ conversationHistory entry === base reply (unsent suffix EXCLUDED)
+  ✓ conversationHistory entry is NOT base+suffix
+
+═══ RUNTIME: CHASE PERSONA VOICE ═══
+
+  ✓ chase: suffix TTS requested once
+  ✓ chase: suffix TTS used the chase voice
+  ✓ chase: every TTS call used the chase voice
+  ✓ chase: aline voice never used
+
+═══ RUNTIME: RESPONSE ALREADY CONTAINS 988 ═══
+
+  ✓ exactly one 988 in received text
+  ✓ no suffix appended
+  ✓ history === received text
+  ✓ telemetry: still reported as crisis
+  ✓ telemetry: crisisTextSent false (nothing extra sent)
+
+═══ RUNTIME: SUFFIX TTS HTTP FAILURE ═══
+
+  ✓ suffix TEXT still received despite TTS failure
+  ✓ telemetry: crisisTextSent true
+  ✓ telemetry: crisisAudioStreamed FALSE on HTTP failure
+  ✓ history === received text (suffix retained)
+  ✓ turn still completes
+
+═══ RUNTIME: SUFFIX TTS TRANSPORT FAILURE ═══
+
+  ✓ suffix TEXT still received despite transport failure
+  ✓ telemetry: crisisAudioStreamed FALSE on transport failure
+
+═══ RUNTIME: ZERO-BYTE AUDIO ═══
+
+  ✓ all-zero-byte stream reports NO audio streamed
+  ✓ text still reported as sent
+  ✓ empty body reports NO audio streamed
+  ✓ zero-byte chunk followed by real audio DOES count
+  ✓ suffix-signature audio bytes reached the client
+  ✓ fixture is genuinely partial — suffix bytes DID reach the socket
+  ✓ partial audio emitted but stream incomplete → reports NOT streamed
+
+═══ RUNTIME: TRAILING-WHITESPACE RESPONSE ═══
+
+  ✓ received text preserves trailing whitespace + suffix
+  ✓ history === received text EXACTLY (no trimEnd drift)
+
+═══ RUNTIME: W21 NON-CRISIS ═══
+
+  ✓ no suffix for a non-crisis W21 disclosure
+  ✓ classified W21
+  ✓ telemetry: crisisActivated false
+  ✓ history === received text
+
+═══ RUNTIME: ANTHROPIC FAILURE SENTINEL INJECTION ═══
+
+  ✓ anthropic HTTP error: no sentinel from body/statusText/headers/request-id
+  ✓ anthropic HTTP error: bounded category logged
+  ✓ anthropic HTTP error: validated numeric status retained
+  ✓ client still receives the generic error message
+  ✓ anthropic error path leaks no user text
+  ✓ anthropic transport error: bounded category logged
+  ✓ anthropic transport error: no raw error text or stack in logs
+  ✓ server.js: raw Anthropic error log removed
+  ✓ server.js: raw generateResponse rejection logs removed
+  ✓ found all three bounded anthropic log sites
+  ✓ anthropic logs reference `err` ONLY inside safeStatus(err && err.status)
+
+═══ RUNTIME: FAILURE-PATH SENTINEL INJECTION ═══
+
+  ✓ transport error: no sentinel from name/code/message/cause/props
+  ✓ transport error: bounded category logged
+  ✓ transport error: audio reported false
+  ✓ http error: no sentinel from body/statusText/headers/request-id
+  ✓ http error: bounded category logged
+  ✓ http error: validated numeric status retained
+  ✓ server.js: no console call references err.name/code/message/statusText/headers
+
+═══ RUNTIME: FAILURE-PATH LOG PRIVACY ═══
+
+  ✓ no user text, assistant text, suffix, or raw provider message in logs
+
+═══════════════════════════════════════════
+RUNTIME RESULTS: 70 passed, 0 failed out of 70 checks
+ALL RUNTIME TESTS PASSED ✓
+═══════════════════════════════════════════
+
+
+═══════════════════════════════════════════
+RELEASE CONTROL ACCEPTANCE TESTS
+═══════════════════════════════════════════
+
+═══ A1: REJECTED CANDIDATE (policy) ═══
+
+  ✓ prohibited fixture is blocked
+  ✓ blocked as EXIT, not referral
+
+═══ A2: APPROPRIATE HUMAN SUPPORT SURVIVES (policy) ═══
+
+  ✓ deployed crisis suffix passes the release policy
+  ✓ crisis suffix carries presence
+  ✓ support + presence reply passes
+  ✓ raw invariant gate STILL flags the suffix (detector unchanged)
+  ✓ release policy overrides it via crisis precedence
+
+═══ A3: MIXED SUPPORT + VIOLATION (policy) ═══
+
+  ✓ unrelated violation is blocked despite support language
+  ✓ only the EXIT parts block
+  ✓ referral is NOT what blocked it
+  ✓ referral WITHOUT presence is still abandonment
+
+═══ A4: WEIGHT INDEPENDENCE (policy) ═══
+
+  ✓ evaluateRelease takes exactly one argument (no classification parameter)
+  ✓ identical verdict for identical text
+  ✓ raw gate IS weight-dependent (NEVER_FILLS fires only at W21)
+  ✓ release policy approves at both weights, excluding the weight-dependent rule
+
+═══ A6: GATE FAILURE FAILS CLOSED (policy) ═══
+
+  ✓ gate exception does NOT approve release
+  ✓ gate error is reported, not swallowed
+  ✓ a failed gate still yields regeneration constraints
+
+═══ A8: DETERMINISTIC FALLBACK (policy) ═══
+
+  ✓ fallback is non-empty (silence is not a terminal state)
+  ✓ fallback passes the policy it is the fallback for
+  ✓ fallback carries presence
+
+═══ A9: REGENERATION CONSTRAINTS PRESERVE CRISIS PRECEDENCE ═══
+
+  ✓ release constraints do NOT forbid human support outright
+  ✓ release constraints explicitly permit appropriate support
+
+═══ A10: CANONICAL SPOKEN REPRESENTATION (policy) ═══
+
+  ✓ markdown is removed for speech
+  ✓ RAW form alone would pass (this is why the mismatch was invisible)
+  ✓ SPOKEN form is prohibited — the two representations disagree
+  ✓ normalizeForSpeech is IDEMPOTENT, so a defensive second call cannot change approved bytes
+  ✓ normalizeForSpeech is total on null/undefined
+
+═══ R1: VIOLATING TEXT NEVER REACHES MEMBER OR TTS ═══
+
+  ✓ violating sentence never appears in member-facing text
+  ✓ second violating clause never appears either
+  ✓ violating sentence never entered TTS
+  ✓ the approved prefix WAS released
+  ✓ turn reached response_complete
+
+═══ R7: EXACTLY ONE REGENERATION ═══
+
+  ✓ exactly two model calls: original + one regeneration
+  ✓ telemetry reports exactly one regeneration
+  ✓ outcome recorded as regenerated
+
+═══ R8: SECOND FAILURE -> DETERMINISTIC FALLBACK ═══
+
+  ✓ never a third attempt after the second failure
+  ✓ deterministic approved fallback was delivered
+  ✓ no violating text leaked on either attempt
+  ✓ terminal state is not silence
+  ✓ explicit terminal state reached
+  ✓ outcome recorded as fallback
+
+═══ R5: RELEASE DECISION IS CLASSIFIER-INDEPENDENT ═══
+
+  ✓ blocked on a W3 turn
+  ✓ blocked on a W21 turn
+  ✓ same number of attempts regardless of weight
+  ✓ same release outcome at both weights
+
+═══ R9: TTS STALL DOES NOT BLOCK APPROVED TEXT ═══
+
+    [timing] lastTextAt=29ms completeAt=831ms (vendor stall 6000ms, drain bound 800ms)
+  ✓ approved text reached the member despite the stall
+  ✓ text arrived quickly, not gated behind synthesis
+  ✓ audio failure is explicit, not silent
+  ✓ turn still completed within the bound
+  ✓ completion was bounded, not held for the full stall
+
+═══ R10: TTS REPRESENTATION MUST BE APPROVED BEFORE SYNTHESIS ═══
+
+  ✓ every TTS payload passes the release policy it was judged under
+  ✓ markdown-normalized prohibited phrase never reaches TTS
+  ✓ masked variant is not synthesized in any form
+  ✓ masked variant is not displayed to the member
+  ✓ turn still reached an explicit terminal state
+
+═══ R11: HARMLESS FORMATTING SURVIVES (positive control) ═══
+
+  ✓ no regeneration was triggered by harmless formatting
+  ✓ DISPLAY representation keeps the markdown
+  ✓ SPOKEN representation has the markup removed
+  ✓ every spoken payload is still policy-approved
+  ✓ the substance of the reply survived normalization
+  ✓ evaluatedSpokenText === ttsRequestText (byte-for-byte, per segment)
+
+═══════════════════════════════════════════
+RELEASE RESULTS: 62 passed, 0 failed out of 62 checks
+ALL RELEASE TESTS PASSED ✓
+═══════════════════════════════════════════
+

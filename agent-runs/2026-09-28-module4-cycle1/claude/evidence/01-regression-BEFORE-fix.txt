@@ -1,0 +1,117 @@
+
+═══════════════════════════════════════════
+RELEASE CONTROL ACCEPTANCE TESTS
+═══════════════════════════════════════════
+
+═══ A1: REJECTED CANDIDATE (policy) ═══
+
+  ✓ prohibited fixture is blocked
+  ✓ blocked as EXIT, not referral
+
+═══ A2: APPROPRIATE HUMAN SUPPORT SURVIVES (policy) ═══
+
+  ✓ deployed crisis suffix passes the release policy
+  ✓ crisis suffix carries presence
+  ✓ support + presence reply passes
+  ✓ raw invariant gate STILL flags the suffix (detector unchanged)
+  ✓ release policy overrides it via crisis precedence
+
+═══ A3: MIXED SUPPORT + VIOLATION (policy) ═══
+
+  ✓ unrelated violation is blocked despite support language
+  ✓ only the EXIT parts block
+  ✓ referral is NOT what blocked it
+  ✓ referral WITHOUT presence is still abandonment
+
+═══ A4: WEIGHT INDEPENDENCE (policy) ═══
+
+  ✓ evaluateRelease takes exactly one argument (no classification parameter)
+  ✓ identical verdict for identical text
+  ✓ raw gate IS weight-dependent (NEVER_FILLS fires only at W21)
+  ✓ release policy approves at both weights, excluding the weight-dependent rule
+
+═══ A6: GATE FAILURE FAILS CLOSED (policy) ═══
+
+  ✓ gate exception does NOT approve release
+  ✓ gate error is reported, not swallowed
+  ✓ a failed gate still yields regeneration constraints
+
+═══ A8: DETERMINISTIC FALLBACK (policy) ═══
+
+  ✓ fallback is non-empty (silence is not a terminal state)
+  ✓ fallback passes the policy it is the fallback for
+  ✓ fallback carries presence
+
+═══ A9: REGENERATION CONSTRAINTS PRESERVE CRISIS PRECEDENCE ═══
+
+  ✓ release constraints do NOT forbid human support outright
+  ✓ release constraints explicitly permit appropriate support
+
+═══ R1: VIOLATING TEXT NEVER REACHES MEMBER OR TTS ═══
+
+  ✓ violating sentence never appears in member-facing text
+  ✓ second violating clause never appears either
+  ✓ violating sentence never entered TTS
+  ✓ the approved prefix WAS released
+  ✓ turn reached response_complete
+
+═══ R7: EXACTLY ONE REGENERATION ═══
+
+  ✓ exactly two model calls: original + one regeneration
+  ✓ telemetry reports exactly one regeneration
+  ✓ outcome recorded as regenerated
+
+═══ R8: SECOND FAILURE -> DETERMINISTIC FALLBACK ═══
+
+  ✓ never a third attempt after the second failure
+  ✓ deterministic approved fallback was delivered
+  ✓ no violating text leaked on either attempt
+  ✓ terminal state is not silence
+  ✓ explicit terminal state reached
+  ✓ outcome recorded as fallback
+
+═══ R5: RELEASE DECISION IS CLASSIFIER-INDEPENDENT ═══
+
+  ✓ blocked on a W3 turn
+  ✓ blocked on a W21 turn
+  ✓ same number of attempts regardless of weight
+  ✓ same release outcome at both weights
+
+═══ R9: TTS STALL DOES NOT BLOCK APPROVED TEXT ═══
+
+    [timing] lastTextAt=29ms completeAt=834ms (vendor stall 6000ms, drain bound 800ms)
+  ✓ approved text reached the member despite the stall
+  ✓ text arrived quickly, not gated behind synthesis
+  ✓ audio failure is explicit, not silent
+  ✓ turn still completed within the bound
+  ✓ completion was bounded, not held for the full stall
+
+═══ R10: TTS REPRESENTATION MUST BE APPROVED BEFORE SYNTHESIS ═══
+
+  ✗ every TTS payload passes the release policy it was judged under
+    → unapproved payloads: ["I'm not qualified to help."]
+  ✗ markdown-normalized prohibited phrase never reaches TTS
+    → ["Brontide.","I'm not qualified to help."]
+  ✗ masked variant is not synthesized in any form
+    → ["Brontide.","I'm not qualified to help."]
+  ✗ masked variant is not displayed to the member
+    → "Brontide. I'm **not** qualified to help."
+  ✓ turn still reached an explicit terminal state
+
+═══ R11: HARMLESS FORMATTING SURVIVES (positive control) ═══
+
+  ✓ no regeneration was triggered by harmless formatting
+  ✓ DISPLAY representation keeps the markdown
+  ✓ SPOKEN representation has the markup removed
+  ✓ every spoken payload is still policy-approved
+  ✓ the substance of the reply survived normalization
+
+═══════════════════════════════════════════
+RELEASE RESULTS: 52 passed, 4 failed out of 56 checks
+4 CHECK(S) FAILED ✗
+  ✗ every TTS payload passes the release policy it was judged under
+  ✗ markdown-normalized prohibited phrase never reaches TTS
+  ✗ masked variant is not synthesized in any form
+  ✗ masked variant is not displayed to the member
+═══════════════════════════════════════════
+

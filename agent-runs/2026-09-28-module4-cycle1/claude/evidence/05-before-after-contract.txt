@@ -1,0 +1,35 @@
+CYCLE 1 — REPRESENTATION CONSISTENCY CONTRACT
+======================================================================
+
+FIXTURE (synthetic): "I'm **not** qualified to help."
+
+BEFORE FIX
+----------------------------------------------------------------------
+  raw candidate            : "I'm **not** qualified to help."
+  canonical spoken form    : "I'm not qualified to help."
+  release verdict on raw   : APPROVED
+  release verdict on spoken: REJECTED  ["I'm not qualified"]
+  governing verdict        : raw only (spoken form was never evaluated)
+  actual TTS payload       : "I'm not qualified to help."   <-- captured at the patched fetch
+  contract                 : VIOLATED — a REJECTED string was synthesized
+
+AFTER FIX
+----------------------------------------------------------------------
+  raw candidate            : "I'm **not** qualified to help."
+  canonical spoken form    : "I'm not qualified to help."
+  verdict governing speech : REJECTED  (spoken form is now what is judged)
+  actual TTS payload       : (none — segment blocked before synthesis)
+  contract                 : HELD — no unapproved string reached the vendor
+
+POSITIVE CONTROL (formatting must still work)
+----------------------------------------------------------------------
+  raw candidate            : "That sounds **really** heavy, and I am staying right here."
+  canonical spoken form    : "That sounds really heavy, and I am staying right here."
+  verdict governing speech : APPROVED
+  display keeps markdown   : true
+  evaluatedSpokenText === ttsRequestText : true  (asserted byte-for-byte in R11)
+
+IDEMPOTENCY
+----------------------------------------------------------------------
+  normalizeForSpeech(normalizeForSpeech(x)) === normalizeForSpeech(x) : true
+  => the defensive guard at the vendor boundary cannot alter approved bytes
