@@ -6,6 +6,7 @@ const { analyzeMessage } = require('./services/classifier')
 const { crisisOverride } = require('./services/crisis-override')
 const {
   evaluateReleaseSafe,
+  normalizeForSpeech,
   takeCompleteSentences,
   APPROVED_FALLBACK,
 } = require('./services/release-policy')
@@ -1925,6 +1926,11 @@ wss.on('connection', (ws, req) => {
       // failure cannot skip, weaken, or change the release decision.
 
       let releasedText = ''
+      // The spoken stream, accumulated in the SAME canonical form the vendor
+      // receives. Evaluated separately from releasedText because the display
+      // and spoken representations legitimately differ: the member sees the
+      // markdown, the vendor does not.
+      let spokenSoFar = ''
       let regenerationsUsed = 0
       let releaseOutcome = 'approved'   // approved | regenerated | fallback | gate_error
       let blockedCount = 0
@@ -1937,11 +1943,14 @@ wss.on('connection', (ws, req) => {
       let ttsFailed = false
       let ttsEnqueued = 0
 
-      function enqueueTTS(segment) {
-        if (!segment || !segment.trim()) return
+      // Takes the ALREADY-CANONICAL spoken string. It must not transform its
+      // input: any transform here would happen after the release verdict and
+      // would recreate the very mismatch this boundary exists to prevent.
+      function enqueueTTS(spokenSegment) {
+        if (!spokenSegment) return
         ttsEnqueued++
         ttsChain = ttsChain
-          .then(() => sendToElevenLabs(segment.trim(), voiceId))
+          .then(() => sendToElevenLabs(spokenSegment, voiceId))
           .then((ok) => { if (!ok) ttsFailed = true })
           .catch(() => { ttsFailed = true })
       }
@@ -1954,14 +1963,48 @@ wss.on('connection', (ws, req) => {
       // telemetry rather than by truncating history. Tightening this is a
       // separate change with its own test implications and is out of scope here.
       let releaseSendFailed = false
-      async function releaseSegment(segment) {
+      async function releaseSegment(segment, spokenSegment = normalizeForSpeech(segment)) {
         const sent = await sendTextTracked(
           JSON.stringify({ type: 'response_text', text: segment })
         )
         if (!sent) releaseSendFailed = true
         releasedText += segment
-        enqueueTTS(segment)
+        // Submit the EXACT string that was authorized for speech. spokenSoFar
+        // grows with the same bytes, so the next segment is judged against the
+        // spoken stream as the member will actually hear it.
+        if (spokenSegment) {
+          spokenSoFar = spokenSoFar ? `${spokenSoFar} ${spokenSegment}` : spokenSegment
+          enqueueTTS(spokenSegment)
+        }
         return sent
+      }
+
+      /**
+       * Authorize one segment for BOTH channels.
+       *
+       * The display form and the spoken form are different objects, so both are
+       * judged. Approving only the raw form let markdown mask a prohibited
+       * phrase: "I'm **not** qualified to help." has no contiguous match and was
+       * approved, then normalization re-formed "I'm not qualified" and the
+       * vendor spoke a sentence the policy would have refused.
+       *
+       * A segment is released only if both representations pass. The spoken
+       * string returned here is the one submitted to TTS, unchanged.
+       */
+      function authorizeSegment(segment) {
+        const displayVerdict = evaluateReleaseSafe(releasedText + segment)
+        if (!displayVerdict.approved) {
+          return { approved: false, verdict: displayVerdict, channel: 'display', spoken: '' }
+        }
+        const spoken = normalizeForSpeech(segment)
+        if (!spoken) return { approved: true, verdict: displayVerdict, channel: null, spoken: '' }
+
+        const spokenCandidate = spokenSoFar ? `${spokenSoFar} ${spoken}` : spoken
+        const spokenVerdict = evaluateReleaseSafe(spokenCandidate)
+        if (!spokenVerdict.approved) {
+          return { approved: false, verdict: spokenVerdict, channel: 'spoken', spoken }
+        }
+        return { approved: true, verdict: spokenVerdict, channel: null, spoken }
       }
 
       // Drive one stream, gating at every complete sentence.
@@ -1980,12 +2023,12 @@ wss.on('connection', (ws, req) => {
           buffer = remainder
 
           for (const sentence of sentences) {
-            const verdict = evaluateReleaseSafe(releasedText + sentence)
-            if (!verdict.approved) {
+            const auth = authorizeSegment(sentence)
+            if (!auth.approved) {
               try { if (typeof activeStream.abort === 'function') activeStream.abort() } catch {}
-              return { blocked: true, verdict }
+              return { blocked: true, verdict: auth.verdict, channel: auth.channel }
             }
-            await releaseSegment(sentence)
+            await releaseSegment(sentence, auth.spoken)
           }
         }
 
@@ -1994,9 +2037,9 @@ wss.on('connection', (ws, req) => {
         // model produced and history drifts from the transcript. enqueueTTS
         // ignores whitespace-only segments, so no empty synthesis call is made.
         if (buffer.length > 0) {
-          const verdict = evaluateReleaseSafe(releasedText + buffer)
-          if (!verdict.approved) return { blocked: true, verdict }
-          await releaseSegment(buffer)
+          const auth = authorizeSegment(buffer)
+          if (!auth.approved) return { blocked: true, verdict: auth.verdict, channel: auth.channel }
+          await releaseSegment(buffer, auth.spoken)
         }
         return { blocked: false, verdict: null }
       }
@@ -2215,20 +2258,16 @@ wss.on('connection', (ws, req) => {
   async function sendToElevenLabs(text, voiceId) {
     if (!text.trim()) return false
 
-    // Strip markdown before TTS so ElevenLabs doesn't read asterisks, underscores,
-    // hashes, or backticks aloud. Preserves sentence content and punctuation.
-    text = text
-      .replace(/\*\*\*([^*]+)\*\*\*/g, '$1')  // ***bold italic***
-      .replace(/\*\*([^*]+)\*\*/g, '$1')      // **bold**
-      .replace(/\*([^*]+)\*/g, '$1')          // *italic*
-      .replace(/___([^_]+)___/g, '$1')        // ___bold italic___
-      .replace(/__([^_]+)__/g, '$1')          // __bold__
-      .replace(/_([^_]+)_/g, '$1')            // _italic_
-      .replace(/```[^`]*```/g, '')            // code blocks (remove entirely)
-      .replace(/`([^`]+)`/g, '$1')            // inline code
-      .replace(/^#{1,6}\s+/gm, '')            // headers (# ## ### etc)
-      .replace(/~~([^~]+)~~/g, '$1')          // ~~strikethrough~~
-      .trim()
+    // Defensive idempotent guard, NOT a transform of approved bytes.
+    //
+    // The canonical spoken form is derived and EVALUATED upstream, in
+    // authorizeSegment, and the approved string is what callers pass here.
+    // normalizeForSpeech is idempotent, so re-applying it cannot change those
+    // bytes. It stays as a floor: a future caller that forgets to normalize
+    // still cannot hand the vendor raw markdown. It must never become the
+    // place where normalization FIRST happens, because anything transformed
+    // here has not been judged by the release policy.
+    text = normalizeForSpeech(text)
 
     if (!text) return false
 

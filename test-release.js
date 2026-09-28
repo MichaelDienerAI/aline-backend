@@ -67,6 +67,11 @@ const VIOLATING_REPLY = `Brontide. ${EXIT_TEXT}`
 const CLEAN_REPLY = 'Brontide. That sounds heavy, and I am staying right here.'
 const SUPPORT_REPLY = "Brontide. I'm here with you. Please call 988 if you need to."
 const MIXED_REPLY = `Brontide. I'm here with you. Please call 988 if you need to. ${EXIT_TEXT}`
+// Cycle 1: emphasis MASKS a prohibited phrase in the raw form. Stripping it
+// for speech re-forms "I'm not qualified", which the policy rejects.
+const MARKDOWN_MASKED_REPLY = "Brontide. I'm **not** qualified to help."
+// Positive control: formatting that changes presentation only.
+const FORMATTED_OK_REPLY = 'Brontide. That sounds **really** heavy, and I am staying right here.'
 const W3_MSG = 'the meeting is at four'                       // no psych marker -> W3
 const W21_MSG = 'I want to talk about something heavy'        // "i want" -> W21
 
@@ -291,6 +296,21 @@ async function main() {
       'release constraints explicitly permit appropriate support')
   }
 
+  console.log('\n═══ A10: CANONICAL SPOKEN REPRESENTATION (policy) ═══\n')
+  {
+    const raw = "I'm **not** qualified to help."
+    const spoken = rp.normalizeForSpeech(raw)
+    check(spoken === "I'm not qualified to help.", 'markdown is removed for speech', JSON.stringify(spoken))
+    check(rp.evaluateRelease(raw).approved === true,
+      'RAW form alone would pass (this is why the mismatch was invisible)')
+    check(rp.evaluateRelease(spoken).approved === false,
+      'SPOKEN form is prohibited — the two representations disagree')
+    check(rp.normalizeForSpeech(spoken) === spoken,
+      'normalizeForSpeech is IDEMPOTENT, so a defensive second call cannot change approved bytes')
+    check(rp.normalizeForSpeech(null) === '' && rp.normalizeForSpeech(undefined) === '',
+      'normalizeForSpeech is total on null/undefined')
+  }
+
   // ── R. RUNTIME LEVEL ───────────────────────────────────────────────
   console.log('\n═══ R1: VIOLATING TEXT NEVER REACHES MEMBER OR TTS ═══\n')
   {
@@ -376,6 +396,101 @@ async function main() {
       'turn still completed within the bound')
     check(t.completeAt !== null && t.completeAt < 3500,
       'completion was bounded, not held for the full stall', `completeAt=${t.completeAt}ms`)
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // R10: TTS REPRESENTATION MUST BE APPROVED BEFORE SYNTHESIS
+  //
+  // CONTRACT PROTECTED BY THIS TEST
+  //   The string the release policy authorizes for speech must be the SAME
+  //   string submitted to the synthesis vendor.
+  //
+  // WHY IT EXISTS
+  //   Markdown normalization used to happen inside sendToElevenLabs, AFTER the
+  //   release verdict. So the gate judged one object and the vendor received a
+  //   different one. Stripping emphasis can join words that the abandonment
+  //   patterns match:
+  //
+  //     raw     "I'm **not** qualified to help."   -> APPROVED (no contiguous match)
+  //     spoken  "I'm not qualified to help."       -> REJECTED ("I'm not qualified")
+  //
+  //   A reply the policy would refuse to speak was spoken anyway.
+  //
+  // INVARIANT
+  //   Every captured TTS request body must itself pass evaluateRelease().
+  //   Asserted against bodies captured at the patched fetch, which is the
+  //   actual vendor payload, not a server-side variable.
+  // ═══════════════════════════════════════════════════════════════════
+  console.log('\n═══ R10: TTS REPRESENTATION MUST BE APPROVED BEFORE SYNTHESIS ═══\n')
+  {
+    const r = await runSession({ turns: [
+      { userText: W21_MSG, replies: [MARKDOWN_MASKED_REPLY, CLEAN_REPLY] },
+    ]})
+    const t = r.observed[0]
+    const ttsTexts = t.tts.map(x => String(x.text || ''))
+
+    // The core invariant. Every spoken payload must be policy-approved.
+    const unapproved = ttsTexts.filter(txt => txt.trim() && !rp.evaluateRelease(txt).approved)
+    check(unapproved.length === 0,
+      'every TTS payload passes the release policy it was judged under',
+      `unapproved payloads: ${JSON.stringify(unapproved)}`)
+
+    // The specific normalized form must never reach the vendor.
+    check(!ttsTexts.some(txt => txt.includes("I'm not qualified")),
+      'markdown-normalized prohibited phrase never reaches TTS',
+      JSON.stringify(ttsTexts))
+
+    // And it must not be spoken in its raw masked form either.
+    check(!ttsTexts.some(txt => txt.includes('qualified to help')),
+      'masked variant is not synthesized in any form', JSON.stringify(ttsTexts))
+
+    // The member must not see it either: same candidate, same verdict.
+    check(!t.emitted.includes('qualified to help'),
+      'masked variant is not displayed to the member', JSON.stringify(t.emitted))
+
+    // Failure is contained, not silent.
+    check(!!t.events.find(e => e.type === 'response_complete'),
+      'turn still reached an explicit terminal state')
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // R11: POSITIVE CONTROL — HARMLESS FORMATTING STILL WORKS
+  //
+  // The defect must not be "fixed" by banning Markdown or by stripping
+  // formatting out of what the member sees. Emphasis that does not change the
+  // policy result must survive: displayed WITH markup, spoken WITHOUT it.
+  // ═══════════════════════════════════════════════════════════════════
+  console.log('\n═══ R11: HARMLESS FORMATTING SURVIVES (positive control) ═══\n')
+  {
+    const r = await runSession({ turns: [
+      { userText: W21_MSG, replies: [FORMATTED_OK_REPLY] },
+    ]})
+    const t = r.observed[0]
+    const ttsTexts = t.tts.map(x => String(x.text || ''))
+    const spokenAll = ttsTexts.join(' ')
+
+    check(t.anthropicCalls === 1, 'no regeneration was triggered by harmless formatting',
+      `got ${t.anthropicCalls}`)
+    check(t.emitted.includes('**really**'),
+      'DISPLAY representation keeps the markdown', JSON.stringify(t.emitted))
+    check(spokenAll.includes('really') && !spokenAll.includes('**'),
+      'SPOKEN representation has the markup removed', JSON.stringify(ttsTexts))
+    check(ttsTexts.every(txt => !txt.trim() || rp.evaluateRelease(txt).approved),
+      'every spoken payload is still policy-approved', JSON.stringify(ttsTexts))
+    check(spokenAll.includes('staying right here'),
+      'the substance of the reply survived normalization', JSON.stringify(ttsTexts))
+
+    // THE CYCLE 1 INVARIANT, asserted byte-for-byte.
+    // Every TTS request body must equal normalizeForSpeech() of the display
+    // frame it came from. That is the observable form of
+    //     evaluatedSpokenText === ttsRequestText
+    // because authorizeSegment evaluates exactly normalizeForSpeech(segment)
+    // and releaseSegment submits exactly that string.
+    const displayFrames = t.events.filter(e => e.type === 'response_text').map(e => e.text)
+    const expectedSpoken = displayFrames.map(f => rp.normalizeForSpeech(f)).filter(Boolean)
+    check(JSON.stringify(expectedSpoken) === JSON.stringify(ttsTexts),
+      'evaluatedSpokenText === ttsRequestText (byte-for-byte, per segment)',
+      `expected ${JSON.stringify(expectedSpoken)} got ${JSON.stringify(ttsTexts)}`)
   }
 
   try { fs.unlinkSync(TTS_LOG) } catch {}

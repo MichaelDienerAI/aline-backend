@@ -257,9 +257,51 @@ function takeCompleteSentences(buffer, streamEnded = false) {
   return { sentences, remainder };
 }
 
+// ---------------------------------------------------------------------------
+// Canonical spoken representation
+// ---------------------------------------------------------------------------
+
+/**
+ * normalizeForSpeech — the SINGLE canonical transform from model text to the
+ * string a synthesis vendor actually receives.
+ *
+ * This logic used to live inside sendToElevenLabs, which ran it AFTER the
+ * release verdict. The gate therefore judged one object and the vendor
+ * received a different one, so emphasis could mask a prohibited phrase:
+ *
+ *   raw     "I'm **not** qualified to help."  -> no contiguous match, APPROVED
+ *   spoken  "I'm not qualified to help."      -> matches, REJECTED
+ *
+ * A reply the policy would refuse to speak was spoken anyway. It lives here so
+ * the evaluator and the vendor share ONE definition rather than two copies that
+ * can drift. Callers derive the spoken form, evaluate THAT, and submit THAT.
+ *
+ * IDEMPOTENT: normalizeForSpeech(normalizeForSpeech(x)) === normalizeForSpeech(x),
+ * asserted in the acceptance tests. A defensive second call at the vendor
+ * boundary therefore cannot change the bytes the policy approved.
+ *
+ * This is a SPOKEN representation only. What the member sees on screen keeps
+ * its markdown; the two representations are allowed to differ.
+ */
+function normalizeForSpeech(text) {
+  return String(text === null || text === undefined ? '' : text)
+    .replace(/\*\*\*([^*]+)\*\*\*/g, '$1')  // ***bold italic***
+    .replace(/\*\*([^*]+)\*\*/g, '$1')      // **bold**
+    .replace(/\*([^*]+)\*/g, '$1')          // *italic*
+    .replace(/___([^_]+)___/g, '$1')        // ___bold italic___
+    .replace(/__([^_]+)__/g, '$1')          // __bold__
+    .replace(/_([^_]+)_/g, '$1')            // _italic_
+    .replace(/```[^`]*```/g, '')            // code blocks (removed entirely)
+    .replace(/`([^`]+)`/g, '$1')            // inline code
+    .replace(/^#{1,6}\s+/gm, '')            // headers
+    .replace(/~~([^~]+)~~/g, '$1')          // ~~strikethrough~~
+    .trim();
+}
+
 module.exports = {
   evaluateRelease,
   evaluateReleaseSafe,
+  normalizeForSpeech,
   buildReleaseConstraints,
   takeCompleteSentences,
   hasPresence,
