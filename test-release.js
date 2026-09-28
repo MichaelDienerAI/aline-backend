@@ -365,6 +365,7 @@ async function main() {
       ttsSlowMs: 6000, drainMs: 800, waitMs: 4000,
     })
     const t = r.observed[0]
+    console.log(`    [timing] lastTextAt=${t.lastTextAt}ms completeAt=${t.completeAt}ms (vendor stall 6000ms, drain bound 800ms)`)
     check(t.emitted.includes('Brontide'), 'approved text reached the member despite the stall',
       JSON.stringify(t.emitted))
     check(t.lastTextAt !== null && t.lastTextAt < 2000,

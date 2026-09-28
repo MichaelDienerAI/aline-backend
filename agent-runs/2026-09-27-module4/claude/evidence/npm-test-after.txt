@@ -289,6 +289,7 @@ RELEASE CONTROL ACCEPTANCE TESTS
 
 ═══ R9: TTS STALL DOES NOT BLOCK APPROVED TEXT ═══
 
+    [timing] lastTextAt=18ms completeAt=820ms (vendor stall 6000ms, drain bound 800ms)
   ✓ approved text reached the member despite the stall
   ✓ text arrived quickly, not gated behind synthesis
   ✓ audio failure is explicit, not silent
