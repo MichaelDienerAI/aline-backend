@@ -5,13 +5,13 @@
 **Repository:** `/Users/michaeldiener/Desktop/aline-backend`  
 **Mode:** Review and local synthetic verification only. Repository code was not modified by the reviewer. This report is the requested export. Temporary review harnesses and test outputs were written under `/tmp`.
 
-> **PROVISIONAL:** Independent implementation checks are complete, but the user requested assessment after Claude finishes its implementation report. Document-to-implementation reconciliation is pending.
+> **FINAL REVIEW:** Completed after Mike confirmed Claude had finished. The implementation report was read and reconciled with commit `173c51d427b30c37e00b39fac99732db6b65597f`. This commit adds the report to `ebe0534`; runtime code is identical. Historical provisional observations below are labeled as such. No source code was changed by Codex.
 
 ## Decision
 
 **Request changes before describing the complete protected-turn mission as achieved.**
 
-The working tree now has a real, causally active withholding mechanism. Its selected abandonment checks can stop a violating sentence before text transmission and TTS submission, run one application-level regeneration, and deliver a predetermined fallback after two rejected candidates. Ordinary text no longer waits for ordinary TTS synthesis. Those are independently reproduced improvements, not merely imported modules.
+The committed implementation now has a real, causally active withholding mechanism. Its selected abandonment checks can stop a violating sentence before text transmission and TTS submission, run one application-level regeneration, and deliver a predetermined fallback after two rejected candidates. Ordinary text no longer waits for ordinary TTS synthesis. Those are independently reproduced improvements, not merely imported modules.
 
 However, the stronger mission remains incomplete:
 
@@ -26,15 +26,13 @@ Passing the supplied fixtures does not disconfirm these counterexamples. The fin
 
 ## 1. Requested source, actual scope, and evidence limits
 
-The user requested review against:
+The requested source, `agent-runs/2026-09-27-module4/claude/implementation-report.md`, is now available and has been read in full. Its SHA-256 is `ceecaea51d81c1e73a15fd0920343867ef6d0f8c923ad0b373c6ddf6f543dfab`. Section 12 below compares its exact claims and acceptance table against independent evidence.
 
-`agent-runs/2026-09-27-module4/claude/implementation-report.md`
+The first review phase occurred while implementation was still underway and the report was absent. Mike explicitly requested waiting for completion. The reviewer saved a provisional artifact and resumed only after Mike said Claude had finished. Earlier missing-document and dirty-tree observations are retained as history, not current blockers.
 
-That path was absent at the initial inspection and at repeated inspections during verification. The initial command returned `No such file or directory`. The reviewer asked asynchronously whether the report was still being written or located elsewhere. No contents of that nonexistent file were inferred or attributed to it.
+At resumption, the working tree was clean at `173c51d427b30c37e00b39fac99732db6b65597f`. The runtime implementation and policy files match the independently probed versions byte for byte. Test files gained mock-server teardown and timing diagnostics. The finished test harnesses were rerun, and the important counterexamples were independently reconfirmed. Exporting this final review modifies only this report in the repository.
 
-The available `claude/report.md` is a prior analysis report, explicitly labeled read-only analysis, not an implementation completion report. Its Appendix A acceptance tests and Appendix B mission order were inspected as a provisional comparison source. The prior Codex final contract in `codex/report.md`, particularly section 10.9, was also available. Differences between those contracts are stated below; neither is silently substituted for the missing requested document.
-
-Files changed concurrently during the review. This was independently observed through new files, changed hashes, and expanded package scripts. The reviewer did not make those code changes. Core `server.js` and `services/release-policy.js` hashes remained the same through the recorded probes. Test and package files did change. Consequently, HEAD alone does not identify the reviewed implementation, and the observations must be read with their file hashes and test-run scope.
+The prior `claude/report.md` Appendix A/B and `codex/report.md` acceptance contract remain relevant for assessing changes of scope. The implementation report explicitly narrows enforcement to one rule and admits missing browser verification. It does not erase the original requirements or turn that unperformed check into evidence.
 
 ### What this review verifies
 
@@ -49,11 +47,26 @@ Files changed concurrently during the review. This was independently observed th
 - Production revision, Railway configuration values, live vendor behavior, production traffic, or historical logs.
 - Browser rendering, actual spoken playback, Simli rendering, or member outcomes.
 - Comprehensive crisis detection, clinical effectiveness, privacy compliance, or general safety.
-- Missing implementation-report claims or owner approval of changes to mission scope.
+- Owner approval of policy choices or changed mission scope. The finished implementation report itself was inspected.
 
 All conversational test material used here was synthetic. No real member conversations or credential values are included.
 
 ## 2. Exact git and build identity
+
+### Finished implementation, authoritative current identity
+
+```text
+HEAD: 173c51d427b30c37e00b39fac99732db6b65597f
+branch: main
+tracking display: main...origin/main [ahead 4]
+working tree: clean before this review export
+```
+
+`173c51d` adds only `claude/implementation-report.md` relative to `ebe0534`. `ebe0534` adds timing diagnostics after implementation commit `7425a6f`. The required policy and test files are now tracked. This resolves the provisional untracked-build finding for local reproducibility. It does not establish production identity, and the boot line still prints version/model/personas rather than a commit hash.
+
+The final resumed manifest, including the two changed test hashes, is in Appendix C. The reported nine-file source diff from `18878b2` to `ebe0534`, excluding `agent-runs`, was independently confirmed: 2,854 insertions and 105 deletions. The phrase “now tracked (was uncommitted)” in the implementation report should distinguish already-tracked modified files from genuinely untracked files; this wording issue does not alter the verified diff.
+
+### Historical provisional identity
 
 Initial state:
 
@@ -112,7 +125,7 @@ At that snapshot the tracked diff was 207 insertions and 17 deletions across pac
 
 `server.js` was the same hash in the in-memory, real-WebSocket, and SDK counterexample runs. The initial package hash was `29877e0928df44f613fd7dc3d53d6acc1027b19a2d71c4c4e667899db27703c0`, before release tests were added to `npm test`. Runtime-test hashes changed as its fixture and cleanup handling were edited externally.
 
-**Conclusion:** this is a working-tree implementation on top of `b27af9b`, not a capability supplied by that commit alone. A clean checkout of the recorded HEAD cannot reproduce the untracked release mechanism. No production commit was independently identified.
+**Historical conclusion:** during the first phase this was a dirty/untracked implementation on top of `b27af9b`. That local artifact problem is now resolved by the later commits. Production identity remains unverified. Do not apply the earlier untracked conclusion to current `173c51d`.
 
 ### Concurrent change at 22:00 Phoenix
 
@@ -137,6 +150,8 @@ Node version observed: **v22.23.1**.
 | Independent real-WebSocket probes, runs 1 and 2 | Unmodified server source, ephemeral loopback listener, mocked model/TTS | Both runs reproduced the release, ordering, blank-result, and late-audio counterexamples. No actual browser. |
 | Real server + installed SDK counterexamples | Existing release-test helper loaded in memory, separate local ports | Markdown bypass, referral-order suppression, and mixed-content handling reproduced through actual SDK streaming. |
 | Direct policy/crisis/wrapper probes | Actual modules; exception injected at checker boundary for wrapper test | Weight-dependent crisis result and raw/transformed policy mismatch reproduced; wrapper returned `approved:false`, `gateError:true` on a thrown checker. |
+| Finished committed build, after Claude completion | `npm test && npm test`, current `173c51d` | **168 passed in each run, exit 0**. Local mock last-text/completion timings: 31/834 ms and 29/832 ms. No inspected test-port listeners remained. |
+| Finished committed build counterexamples | Real SDK driver and real-WebSocket fault driver rerun | Markdown bypass, referral suppression, late audio, suffix failure visibility, blank success, and classifier-degraded behavior reconfirmed. |
 
 Representative complete test output:
 
@@ -151,7 +166,7 @@ These totals count assertions/checks, not 168 independent end-to-end member scen
 
 ### Repeatability conclusion
 
-The exact full-suite-twice/no-listeners criterion was **verified locally at the end of the review**: the final sequential command passed all 168 checks twice, exited 0, and left no matching listeners on the inspected test-port ranges. Earlier attempts encountered a competing fixed-port listener. Those failures establish a concurrency limitation, not a sequential-repeat failure. The reviewer waited for free ports and did not terminate another process.
+The exact full-suite-twice/no-listeners criterion was **verified locally at the end of the provisional phase**: the final sequential command passed all 168 checks twice, exited 0, and left no matching listeners on the inspected test-port ranges. Earlier attempts encountered a competing fixed-port listener. Those failures establish a concurrency limitation, not a sequential-repeat failure. The reviewer waited for free ports and did not terminate another process.
 
 Concurrent edits also prevent labeling all early suite executions as tests of the final manifest. The core counterexamples are better anchored: both key implementation hashes stayed stable and the independent probe outcomes repeated.
 
@@ -341,9 +356,9 @@ The review did not merely infer that the gate was unwired. That earlier problem 
 
 The mixed-content SDK probe produced `...988.I am staying.` with no inserted separating space between an approved prefix and a regenerated candidate. This is a smaller composition defect and evidence that regeneration continues after an already released prefix; it is not proof of a prohibited EXIT leaking.
 
-## 6. Provisional acceptance matrix
+## 6. Acceptance matrix for the broader protected-turn mission
 
-The requested implementation report was unavailable during the recorded review. This matrix compares actual behavior with the accessible Claude analysis Appendix A and the prior Codex contract. It is not a claim to have read missing implementation assertions.
+This matrix assesses the broader protected-turn mission from the prior contracts, now with the finished implementation report available. Section 12 separately assesses its revised 12-row table. Where scope changed, that distinction is explicit.
 
 | Acceptance item | Assessment | Independent evidence / missing evidence |
 |---|---|---|
@@ -359,7 +374,7 @@ The requested implementation report was unavailable during the recorded review. 
 | Browser-visible completion | UNKNOWN | Real Node WebSocket client is not browser rendering/playback. |
 | Logging sentinels | PASS within tested routes | Existing suite passed; broad no-leak claim remains unsupported for untested/raw logging paths. |
 | Repeat full suite twice with no listeners | PASS in final local run | `npm test && npm test`: 168/168 each; no remaining listeners on inspected test ports. Earlier concurrent runs collided. |
-| Reviewed/submitted/deployed identity | FAIL for a committed artifact; production UNKNOWN | Dirty tree plus untracked required module/test. Boot version is not a revision hash. |
+| Reviewed/submitted/deployed identity | PASS for local committed identity; production UNKNOWN | `173c51d` contains the tested implementation; runtime equals `ebe0534`. Boot output lacks a revision hash. |
 | 30-fixture routing contract | NOT ESTABLISHED | No independent complete corpus through runtime was shown; new gate has narrowed scope. |
 | Good-reply corpus acceptance rate | NOT ESTABLISHED | No measured corpus budget; referral-order counterexample found. |
 | Candidate transformation | FAIL | Actual TTS payload rejects under the same policy. |
@@ -372,7 +387,7 @@ Avoid treating a justified design change as misconduct: removing weight-dependen
 
 ## 7. Why the passing tests miss the failures
 
-- `test-release.js:355-372` waits only four seconds while its TTS mock delays six seconds, then terminates the child. It verifies early text/completion but ends before the delayed audio can expose the terminal-state defect.
+- `test-release.js:360-378` waits only four seconds while its TTS mock delays six seconds, then terminates the child. It verifies early text/completion but ends before the delayed audio can expose the terminal-state defect.
 - Its WebSocket handler retains JSON events and does not capture binary audio. It cannot assert no late audio from the observations it records.
 - The support fixture puts presence before referral. It does not cover a later presence sentence, negation, quotation, or permission-changing formatting.
 - The weight unit test calls the same single-argument release function twice. Source inspection and runtime low/high cases support the narrow result, but neither removes the weight condition from crisis handling.
@@ -397,14 +412,14 @@ Avoid treating a justified design change as misconduct: removing weight-dependen
 | History equals what the member received | History accumulates attempted ordinary release and cannot establish client rendering; send failure is not reflected as promised. |
 | Advisory findings are reported in telemetry | The adapter returns them; the server currently discards them. |
 | 168 passing checks proves the mission | It proves those checks passed in the recorded local mock setup. Independent counterexamples remain. |
-| Build `b27af9b` contains the release controller | The controller is an untracked/dirty working-tree addition on that commit. |
+| Build `b27af9b` contains the release controller | It does not. The controller is committed by `7425a6f` and present at current `173c51d`. |
 | Live/deployed output behavior was reviewed | No deployed revision or real browser was inspected. |
 
 Remaining raw error/persona log sites and static health/boot responses were observed in code. They prevent a repository-wide privacy/health/build-provenance guarantee. No sensitive logs were read, and these observations do not establish historical exposure.
 
 ## 9. Recommendations in causal order
 
-1. **Freeze and identify the review artifact.** Supply the requested implementation report and record exact code/test/configuration identity. Resolve the competing mission definitions explicitly. Do not describe HEAD as the dirty build.
+1. **Preserve the identified artifact and resolve scope.** The requested report and committed source now exist. Retain current hashes and test evidence, correct the report's overbroad claims, and explicitly resolve the different mission definitions.
 2. **Close the representation gap.** Cover the exact text/spoken meaning after transformations with the release decision. Add the reproduced markdown counterexample before changing code.
 3. **Resolve the approval-unit mismatch.** Test both referral/presence orders and choose buffering consistent with the adopted policy. Preserve support without creating a broad exemption.
 4. **Make terminal media behavior true.** One ordered media lifecycle per turn, cancellation/suppression after terminal state, and suffix failure reflected in client state. Test delayed success beyond the deadline and a next turn.
@@ -479,10 +494,92 @@ The TTS policy results for individual referral-only chunks are not treated as se
 
 ## 11. Completion boundary
 
-This is a review result, not a release approval. No implementation changes were made by Codex. Required fixes are recommendations only. The requested implementation-report comparison remains limited by that document's absence during the recorded review; a later-supplied document or changed source requires a scoped follow-up rather than retroactive claims.
+This is a review result, not a release approval. No implementation changes were made by Codex. Required fixes are recommendations only. The finished implementation-report comparison is complete in section 12. Any later source or deployment change requires a scoped follow-up rather than retroactively inheriting these results.
 
-The defensible current statement is: **the reviewed working tree withholds selected violating sentence prefixes and bounds application regeneration in local tests, but does not yet satisfy the complete protected-turn acceptance contract.**
+The defensible current statement is: **the reviewed committed implementation withholds selected violating sentence prefixes and bounds application regeneration in local tests, but does not yet satisfy the complete protected-turn acceptance contract.**
 
+
+## 12. Assessment of Claude's completed implementation report
+
+This section was completed after the report existed and Mike confirmed the implementation was finished. References are to `claude/implementation-report.md` in commit `173c51d`.
+
+### Revised 12-condition table, independently assessed
+
+| Report item | Report result | Independent assessment of the finished implementation |
+|---|---|---|
+| 1. No violating text or TTS | PASS | **PARTIAL; broad claim contradicted.** The plain EXIT fixture is withheld. The markdown counterexample sends policy-rejected transformed text to TTS. Reproduced again after completion through the real server/SDK. |
+| 2. Appropriate support survives | PASS | **PARTIAL.** The fixed suffix and presence-first fixture pass. A policy-approved referral-first reply is interrupted and can lose the resource. |
+| 3. Mixed support and violation | PASS | **VERIFIED for the stated fixture.** Explicit EXIT remains blocking despite presence/referral. Runtime and SDK probes retained the referral and withheld that EXIT. No universal semantic guarantee follows. |
+| 4. Weight independence | PASS | **VERIFIED for `evaluateRelease` only.** Source inspection and runtime tests support it. Crisis activation still has a weight threshold, as the report later admits. |
+| 5. Classifier failure, no silent skip | PASS | **Evidence does not establish the stated failure test.** The cited suite varies successful classifications; it does not force `analyzeMessage` to throw. Independent fault injection here confirms candidate evaluation continues, but crisis evaluation is skipped. Narrow release independence is supported; the original degraded-crisis requirement is not met. |
+| 6. Gate exception | PASS | **VERIFIED for exception-to-block and the tested fallback branch.** The suite's poison conversion is a unit fault; this review additionally injected runtime error verdicts. No event-loop deadline or browser outcome is established. |
+| 7. Exactly one regeneration | PASS | **VERIFIED as one application regeneration after rejection.** It is not a universal two-HTTP-request ceiling because SDK retries remain. Ordinary accepted turns use no regeneration. |
+| 8. Second failure | PASS | **VERIFIED for two policy rejections.** Fixed fallback and completion occur. It also enters TTS; generation/transport failure on retry takes a different generic-error branch. |
+| 9. TTS stall | PASS | **PARTIAL.** Approved text and a terminal frame can precede delayed ordinary audio. Late audio still escapes after completion, and suffix-only audio failure lacks the claimed notification. |
+| 10. Repeatability | PASS | **Supported by independent sequential execution.** Historical and finished-build runs are separately recorded. Fixed ports still prohibit safe simultaneous suite instances. |
+| 11. Build identity | PASS | **PASS locally, not for production.** The report's `ebe0534` implementation matches current runtime. Current HEAD is `173c51d`, a report-only successor. No runtime boot hash or deployed identity is established. |
+| 12. Browser pilot | NOT PERFORMED | **Correctly disclosed.** Real Node WebSocket receipt is useful evidence but cannot prove UI rendering, playback, or handling of `audio_unavailable`. |
+
+The report says “All 12 required conditions” while marking one unperformed. Its opening “Objective met” is defensible only for the narrower existence claim that a selected fixture can be withheld before release. It is not defensible as completion of the original complete structural slice with browser evidence, preserved appropriate support, and bounded terminal behavior across the required failures.
+
+### F11. High: deployment recommendation conflicts with the stated enforcement prerequisite
+
+**Claim:** The proposed “deploy now, measure good replies before enabling enforcement” sequence is not supported by the code's actual enablement controls.
+
+**Reason:** Report lines 232-241 recommend deploying `ebe0534`, then say to measure false positives before enabling enforcement on real members. The `server.js` generation path invokes `streamWithGate` unconditionally. No separate release-enforcement switch or application access protection was established. Deploying this version to a serving endpoint would activate the gate for turns reaching that endpoint.
+
+**Inference:** A separately restricted environment or externally enforced access boundary could make a synthetic demonstration appropriate, but neither can be assumed. The report's own stated prerequisite is not automatically preserved by its deployment recommendation. This finding does not authorize or prohibit deployment on Mike's behalf; it identifies the missing decision and mechanism.
+
+**Test/recommendation:** Before any deployment decision, establish the actual serving environment/access boundary and ensure the chosen artifact matches the intended exposure. Keep urgent privacy containment separable from enabling unvalidated enforcement. Do not present the entire implementation as a privacy-only deployment, and do not weaken the gate to make a demonstration easier.
+
+### F12. Medium: a boot line cannot supply the revision evidence requested by the report
+
+**Claim:** The application boot output cannot confirm that Railway is running `ebe0534`.
+
+**Reason:** `server.js:2403-2406` emits a product version, model setting, and persona list. It does not emit the commit or an immutable build identifier. Report lines 232 and 238 specifically propose confirming the commit from that boot line.
+
+**Inference:** A deployment provider may offer reliable revision metadata separately. None was inspected here. A clean local repository establishes local identity, not a deployed artifact.
+
+**Test/recommendation:** Obtain actual deployment revision metadata or an intentionally supplied immutable build identifier, and match it to the reviewed configuration and artifact. Treat production commit as UNKNOWN until then.
+
+### F13. Medium: cumulative evaluation does not make premature sentence splitting harmless
+
+**Claim:** Report limitation 10, that a wrong split costs only an extra evaluation and never a wrong verdict, is contradicted by the adapter's presence rule.
+
+**Reason:** This direct probe on the finished modules produced:
+
+```text
+Full candidate: Please call Dr. Smith while I am here with you.
+Whole-candidate policy: approved
+Segmenter pieces:
+  1. Please call Dr.
+  2.  Smith while I am here with you.
+First-piece policy: rejected
+```
+
+`streamWithGate` stops at that rejection and cannot use the later presence phrase. This is the same mechanism as the independently reproduced referral-order runtime failure, now caused by an abbreviation within one ordinary sentence.
+
+**Inference:** Cumulative evaluation includes prior context; it does not include future context. The adapter's approval is not monotonic as text arrives. This does not establish that every abbreviation or decimal causes a bad decision.
+
+**Test/recommendation:** Add this case and other support/formatting variations. Align buffering with the context required by each rule. Preserve human-support meaning instead of treating all early nonapprovals as a safe outcome.
+
+### Other claim corrections and verified disclosures
+
+- **Timing is a local mock measurement.** The saved 22 ms/824 ms result exists in the supplied evidence. It measures last received text and completion at a Node client with synthetic providers, not first approved browser render or real-member latency. The older immediate-stream path already sent some text before awaiting TTS; the stall blocked later text, not necessarily all first text. The report should state that distinction.
+- **“Fails safe” is too broad.** Rejecting a referral because a presence phrase is unrecognized can remove appropriate support. It is a conservative lexical rejection, not proof of a safe member outcome. Mechanically the matched fragment remains classified REFERRAL; lack of presence prevents its exemption, rather than changing it into EXIT.
+- **Production logging is conditional on the deployed version.** Section 9 labels production identity unknown/presumed, while section 11 categorically says production continues logging until this commit is deployed. Keep that statement conditional. The review did not inspect production.
+- **“Deployed crisis suffix” is unsupported terminology.** A suffix constant in local code is verified. This review has no evidence that the current production version contains it.
+- **Advisories are returned, not operationally reported.** The adapter returns judgment/narration findings, but the server discards them. A claim of emitted telemetry needs a real consumer and bounded fields.
+- **Residual logging references need updating.** Current raw sites are Simli response text at `server.js:1759`, Simli error object at `1768`, Deepgram error object at `1845`, and WebSocket error object at `2398`. These are four raw-content/error logging sites, not four whole-object calls. The report's old line numbers do not identify current code. Client-controlled persona identifiers are also still interpolated into logs.
+- **The repaired old regeneration helper is verified.** Its new instruction permits human support. The active release adapter already used its own constraints, so this edit does not close the representation/order defects. Some comments describing the old helper remain stale.
+- **Browser and scope limitations are candidly disclosed.** The report correctly distinguishes real WebSocket transport from browser proof, limits enforcement to one rule, admits a missing good-reply corpus, and acknowledges classifier-dependent suffix behavior and mock-only regeneration prefill validation. These disclosures should remain.
+- **“Not deployed” is a source assertion about Claude's actions.** No deployment evidence was inspected by Codex. There is no basis to promote it into a claim about every actor or the actual current production revision.
+
+### Evidence files and claim strength
+
+The named baseline, after-fix, and suite evidence files exist. Their saved results are consistent with the reported selected fixtures. `capture-after.js` evaluates modules and prints FIXED for those cases; it does not drive the full release stream, post-policy TTS transformation, delayed audio, or browser. In particular, its F3 check uses function arity as part of its evidence. Arity alone cannot prove independence from global state, although inspection of this implementation and independent runtime probes support the narrow weight-independence claim.
+
+These artifacts support the selected improvements. They do not falsify the review's out-of-fixture counterexamples or establish that every requirement has been met.
 
 ## Appendix A. Reproducible SDK counterexample driver
 
@@ -511,9 +608,9 @@ const m=new Module(file);m.filename=file;m.paths=Module._nodeModulePaths(root);m
 The independent late-audio probe used four sentences, a 20 ms mocked synthesis delay per request, and `TTS_DRAIN_TIMEOUT_MS=5`. It retained binary WebSocket frames for 120 ms, including frames after completion. Both runs received four audio frames after the terminal event. Unlike the repository stall test, it observed beyond the delayed provider success. These small settings test ordering; they do not estimate real provider latency.
 
 
-## Appendix B. Final review cutoff and identity
+## Appendix B. Historical provisional cutoff and identity
 
-Final source/status inspection: **2026-09-27T22:03:49.025346 Phoenix**. The requested implementation report was still absent. HEAD remained `b27af9b8f378f4dc2846ca40be4c65faaf9b0416`. Core server/release-policy hashes remained unchanged throughout the counterexample probes and final repeat. The old gate regeneration-helper change was already present before the final sequential command. No further changes to the recorded files appeared at final inspection.
+Provisional source/status inspection: **2026-09-27T22:03:49.025346 Phoenix**. The requested implementation report was still absent. HEAD remained `b27af9b8f378f4dc2846ca40be4c65faaf9b0416`. Core server/release-policy hashes remained unchanged throughout the counterexample probes and final repeat. The old gate regeneration-helper change was already present before the final sequential command. No further changes to the recorded files appeared at final inspection.
 
 ```text
 ## main...origin/main [ahead 1]
@@ -526,9 +623,9 @@ Final source/status inspection: **2026-09-27T22:03:49.025346 Phoenix**. The requ
 ?? test-release.js
 ```
 
-The final manifest is the section 2 table with `services/invariant-gate.js` replaced by `ecd22530b695035f133b0c0e75168abc23b2c38b1f99594a54272750cdcdf470`. All other hashes match the 21:55:54 manifest. The earlier whole-suite successes and the final repeat are separately recorded rather than retrospectively treated as one frozen test run.
+The provisional phase final manifest is the section 2 table with `services/invariant-gate.js` replaced by `ecd22530b695035f133b0c0e75168abc23b2c38b1f99594a54272750cdcdf470`. All other hashes match the 21:55:54 manifest. The earlier whole-suite successes and the final repeat are separately recorded rather than retrospectively treated as one frozen test run.
 
-Final repeated results:
+Provisional phase repeated results:
 
 ```text
 Run A: 52 unit passed, 70 runtime passed, 46 release passed, 0 failed
@@ -538,3 +635,64 @@ Post-run inspected test-port listeners: none
 ```
 
 **Final disposition: request changes to the protected-turn implementation; passing local fixtures and successful repeatability do not resolve the reproduced release, crisis-ordering, and late-audio defects.**
+
+
+## Appendix C. Finished-build verification and final export
+
+**Final verification time:** 2026-09-27T22:21:39.808492 Phoenix.
+
+**Reviewed HEAD:** `173c51d427b30c37e00b39fac99732db6b65597f`. Runtime files match `ebe0534`; the HEAD successor adds the implementation report only. The working tree was clean when the finished review resumed. At export, only `agent-runs/2026-09-27-module4/codex/review-report.md` is modified. No code change was made by the reviewer.
+
+All files in the resumed manifest were unchanged across the finished-build verification.
+
+| File | SHA-256 |
+|---|---|
+| `server.js` | `226fdad1c1ec0f919591d10662266aa8fab796e7d8d40dbeb528b929754be902` |
+| `services/release-policy.js` | `767972d7b0a15320dfb6429ceab76a71ea8467d05367d15c8f9162a76f2e39a8` |
+| `services/invariant-gate.js` | `ecd22530b695035f133b0c0e75168abc23b2c38b1f99594a54272750cdcdf470` |
+| `services/crisis-override.js` | `59c292cb99ecd1db2935342facb9759554f76b203e551fada70dc8b94bd38999` |
+| `services/classifier.js` | `af43cfdf41499fc268d15f0c52081004271961b9570f20ab154bad30e7e87a76` |
+| `package.json` | `27c02d9f868d7bbbad5a76a655669582609fbeaaae8e57ded4a231648380d087` |
+| `package-lock.json` | `080f8edc7a0059c50f12f68ba7106fdcc1876eee95963dd9a2fd0c58f2e241b1` |
+| `test-mra.js` | `8f86a7dae574cac3d9ea818594a07e7ccd81cfd1e2ac23ff29c556100af37434` |
+| `test-runtime.js` | `43163dd14d460c7477e60f78ab62f909c24cbcfb318b81d3ab1cba8ce78142a7` |
+| `test-release.js` | `f2474c2325c6f7a672c61eb70742d7a8e2c8dec38bd88d8a6c159380b983809d` |
+| `railway.toml` | `a449200a217c74689efe905f25e98d9758a58b820c08e0d5efd60b86714242e7` |
+| `agent-runs/2026-09-27-module4/claude/implementation-report.md` | `ceecaea51d81c1e73a15fd0920343867ef6d0f8c923ad0b373c6ddf6f543dfab` |
+
+Finished-build tests, independently executed after Mike confirmed completion:
+
+```text
+npm test && npm test
+Run A: 52 unit passed, 70 runtime passed, 46 release passed, 0 failed
+Run B: 52 unit passed, 70 runtime passed, 46 release passed, 0 failed
+Combined exit: 0
+Run A mocked lastTextAt=31ms, completeAt=834ms
+Run B mocked lastTextAt=29ms, completeAt=832ms
+No remaining listeners on inspected test-port ranges
+```
+
+Those timings use a synthetic 6000 ms TTS delay and 800 ms drain bound. They are not real-vendor or browser latency. The stall fixture still stops observing before its delayed audio success, which is why the separate late-audio probe matters.
+
+Additional evidence from the finished build:
+
+```text
+Markdown candidate: one model request; transformed rejected phrase in TTS; complete
+Referral-first candidate: two model requests; final response omitted resource
+Late audio: four binary frames after audio_unavailable and response_complete
+Suffix-only TTS failure: crisisAudioStreamed=false; no audio_unavailable frame
+Empty model: zero response text; success completion
+Classifier exception: ordinary release completes; crisis not evaluated
+```
+
+Finished-phase temporary logs:
+
+```text
+/tmp/personaio-codex-finished-repeat-a.log
+/tmp/personaio-codex-finished-repeat-b.log
+/tmp/personaio-codex-finished-sdk-probes.jsonl
+/tmp/personaio-codex-finished-websocket-probes.jsonl
+/tmp/personaio-codex-finished-manifest-before.json
+```
+
+**Final recommendation:** preserve the committed withholding mechanism and successful repeat evidence, correct the release representation and ordering defects, make media termination truthful, and reconcile the documented crisis/failure contract before treating the complete mission as met. Keep deployment identity and release authorization separate from local test success.
