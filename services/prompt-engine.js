@@ -201,6 +201,21 @@ const RESISTANCE_INSTRUCTIONS = {
 };
 
 // ═══════════════════════════════════════════════════════
+// MOOD-SPECIFIC INSTRUCTIONS
+// Restores the mood-routing signal dropped in 8f19a8d, when prompt assembly
+// moved out of invariant-gate.js and `mood` was left destructured but unused.
+// These are DELIVERY-REGISTER MODIFIERS only. They do not override identity,
+// invariants, length constraints, question restraint, or resistance handling —
+// all of which remain authoritative and, in the case of resistance, are
+// assembled after this block so an explicit boundary always wins.
+// ═══════════════════════════════════════════════════════
+
+const MOOD_INSTRUCTIONS = {
+  JOYFUL: `CELEBRATION: Match the user's positive energy without overproducing. Be warm, specific, and brief. Do not force a question or change the footing the user established.`,
+  WARM_PLAYFUL: `PLAYFUL: Match the user's playfulness with warmth and restraint. Hold the tone without escalating it, overexplaining, or forcing disclosure. Preserve the user's footing.`
+};
+
+// ═══════════════════════════════════════════════════════
 // RESPONSE LENGTH CONSTRAINTS
 // Derived from Q13 latency budget — shorter responses = faster TTS
 // ═══════════════════════════════════════════════════════
@@ -276,6 +291,12 @@ function buildSystemPrompt(classificationResult, conductanceData = null, regener
   // Length constraint from Q13
   const lengthConstraint = getLengthConstraint(weight);
 
+  // Mood-specific delivery register. Placed before resistanceBlock in the
+  // assembly so an explicit boundary or exhaustion cue overrides the mood.
+  const moodBlock = MOOD_INSTRUCTIONS[mood?.mode]
+    ? `\n${MOOD_INSTRUCTIONS[mood.mode]}`
+    : '';
+
   // Regeneration constraints (if invariant gate flagged the previous response)
   const regenBlock = regenerationConstraints
     ? `\nCRITICAL CONSTRAINTS (previous response violated identity rules):\n${regenerationConstraints}`
@@ -298,6 +319,7 @@ function buildSystemPrompt(classificationResult, conductanceData = null, regener
     `\nCURRENT CALIBRATION: ${calibration.label}`,
     calibration.instruction,
     `\nLENGTH: ${lengthConstraint}`,
+    moodBlock,
     resistanceBlock,
     conductanceBlock,
     regenBlock,
@@ -315,5 +337,6 @@ module.exports = {
   getLengthConstraint,
   IDENTITY_CORE,
   INVARIANT_RULES,
-  WEIGHT_CALIBRATIONS
+  WEIGHT_CALIBRATIONS,
+  MOOD_INSTRUCTIONS
 };

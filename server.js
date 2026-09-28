@@ -2,6 +2,42 @@ const WebSocket = require('ws')
 const http = require('http')
 const { createClient } = require('@deepgram/sdk')
 const Anthropic = require('@anthropic-ai/sdk')
+const { analyzeMessage } = require('./services/classifier')
+const { crisisOverride } = require('./services/crisis-override')
+const crypto = require('crypto')
+
+// ── BOUNDED FAILURE TAXONOMY ──────────────────────────────────────
+// Every failure log emits one of THESE string literals and nothing else from
+// the error. err.name / err.code / err.message / headers / statusText /
+// request-ids all originate outside our trust boundary: a provider (or a
+// crafted upstream response) can put arbitrary content in any of them.
+// Selected metadata fields are not automatically safe metadata.
+const FAILURE = {
+  ANTHROPIC: 'anthropic_generation_failure',
+  CLASSIFIER: 'classifier_failure',
+  CRISIS: 'crisis_override_failure',
+  TTS_HTTP: 'elevenlabs_http_failure',
+  TTS_TRANSPORT: 'elevenlabs_transport_failure',
+  TTS_STREAM: 'elevenlabs_stream_failure',
+}
+
+// HTTP status is only logged after proving it is a plain integer in range.
+// A non-conforming value is discarded rather than coerced.
+const safeStatus = (v) => (Number.isInteger(v) && v >= 100 && v <= 599 ? v : null)
+
+// Test-only observability hook. Inert unless ALINE_TEST_HISTORY_FILE is set,
+// which no deployment path sets (railway.toml startCommand is `node server.js`).
+// Emits SHA-256 fingerprints, never content — so even if it were switched on by
+// accident it cannot disclose a conversation. Lets tests assert on the ACTUAL
+// conversationHistory array rather than a value derived from it.
+const TEST_HISTORY_FILE = process.env.ALINE_TEST_HISTORY_FILE || null
+function fingerprintHistory(history) {
+  return history.map(m => ({
+    role: m.role,
+    len: m.content.length,
+    sha: crypto.createHash('sha256').update(m.content).digest('hex').slice(0, 16),
+  }))
+}
 
 // ── CONFIGURATION ─────────────────────────────────────────────────
 const VOICE_IDS = {
@@ -1741,6 +1777,9 @@ wss.on('connection', (ws, req) => {
   // drifts out of persona. The real /session paths omit the flag and keep
   // full web search.
   const isDemo = url.searchParams.get('demo') === '1'
+  // personaId comes from the client query string. Never log it raw — resolve it
+  // against the known set first so logs carry a bounded value.
+  const personaKey = Object.prototype.hasOwnProperty.call(SYSTEM_PROMPTS, personaId) ? personaId : 'unknown'
   const systemPrompt = SYSTEM_PROMPTS[personaId] || SYSTEM_PROMPTS.aline
   const voiceId = VOICE_IDS[personaId] || VOICE_IDS.aline
 
@@ -1798,8 +1837,42 @@ wss.on('connection', (ws, req) => {
 
   // ── ANTHROPIC ──
   async function generateResponse(userText) {
-    console.log(`[${personaId}] "${userText}"`)
+    // Metadata only — the raw turn is never written to logs. Length is an
+    // operational signal (turn arrived, roughly how big); it cannot reproduce
+    // or paraphrase what was said.
+    const turnStart = Date.now()
+    console.log(`[${personaId}] turn received — ${userText.length} chars`)
     conversationHistory.push({ role: 'user', content: userText })
+
+    // ── MODULE 4 / STEP 1: CLASSIFICATION — OBSERVATION ONLY ──
+    // Classifies the turn and logs metadata. It does NOT influence the prompt,
+    // token ceiling, streaming, TTS, or history. Declared here so later steps
+    // (invariant gate, crisis override) can read it from the whole function
+    // scope without moving this call.
+    //
+    // Wrapped defensively: a classifier fault must never be able to take down
+    // response generation while this component has no authority over output.
+    let classification = null
+    try {
+      classification = analyzeMessage(userText)
+      // Metadata only. Never log userText, the ABT logline, marker keywords,
+      // confession text, or anything else that could reproduce or paraphrase
+      // the user's disclosure. `dimension` and `mood.mode` are fixed enums.
+      console.log(`[classify] ${JSON.stringify({
+        persona: personaKey,
+        weight: classification.weight,
+        dimension: classification.dimension,
+        mood: classification.mood?.mode ?? null,
+        resistanceCount: classification.resistance?.length ?? 0,
+        hasCriticalResistance: classification.hasCriticalResistance === true,
+        classificationTimeMs: classification.classificationTimeMs,
+      })}`)
+    } catch (err) {
+      // Nothing from `err` is logged — not name, not code, not message.
+      console.error(`[classify] ${JSON.stringify({
+        component: 'classifier', failure: FAILURE.CLASSIFIER, fatal: false,
+      })}`)
+    }
 
     let fullResponse = ''
 
@@ -1844,20 +1917,151 @@ wss.on('connection', (ws, req) => {
         await sendToElevenLabs(textBuffer.trim(), voiceId)
       }
 
-      conversationHistory.push({ role: 'assistant', content: fullResponse })
+      // ── MODULE 4 / STEP 2: CRISIS OVERRIDE ──
+      // Runs after generation and after the last TTS flush, but before the
+      // history write, response_complete, and the return to listening — so the
+      // suffix is fully delivered before the turn is considered finished.
+      //
+      // The main response is NOT buffered: it already streamed and spoke
+      // normally. This layer only appends, never rewrites what was delivered.
+      //
+      // CONTRACT (see test-mra.js): crisisResult.modifiedResponse does NOT
+      // contain crisisSuffix. The suffix must be delivered separately and then
+      // appended, or the 988 referral is silently dropped.
+      //
+      // HISTORY BASE: always the original streamed fullResponse. By the time
+      // this runs, those exact bytes are already on the client. crisisOverride
+      // returns a trimEnd()'d modifiedResponse, which no longer matches what
+      // was delivered — using it would desync history from the transcript.
+      // Crisis handling appends; it cannot retroactively edit what was sent.
+      let deliveredResponse = fullResponse
+      let crisisActivated = false
+      let crisisTextSent = false
+      let crisisAudioStreamed = false
+
+      if (classification) {
+        try {
+          const crisisResult = await crisisOverride({
+            classification,
+            response: fullResponse,
+            // No session identifier exists in this runtime. Passing null keeps
+            // crisis-override's Atelier artifact stub inert (crisis-override.js:162)
+            // rather than inventing persistence here.
+            sessionId: null,
+            userMessage: userText,
+          })
+
+          crisisActivated = crisisResult.override === true
+
+          if (crisisActivated && crisisResult.crisisSuffix) {
+            // Confirm the frame was actually accepted before claiming anything.
+            // A closed socket must not produce a "sent" status, must not put the
+            // suffix in history, and must not trigger a pointless TTS call.
+            crisisTextSent = await sendTextTracked(
+              JSON.stringify({ type: 'response_text', text: crisisResult.crisisSuffix })
+            )
+
+            if (crisisTextSent) {
+              // History follows TEXT transmission, not audio. If TTS fails the
+              // member still received the referral, so it stays in the transcript.
+              deliveredResponse += crisisResult.crisisSuffix
+              // Its own TTS call so it can never be truncated by the main
+              // response, awaited so it lands before response_complete.
+              crisisAudioStreamed = await sendToElevenLabs(crisisResult.crisisSuffix, voiceId)
+            }
+          }
+        } catch (err) {
+          // The main response has already been streamed and spoken. Failing the
+          // turn here would strand the client in 'thinking'. Log loudly, deliver
+          // what the member actually received, and continue.
+          // Nothing from `err` is logged.
+          console.error(`[crisis] ${JSON.stringify({
+            component: 'crisis-override', failure: FAILURE.CRISIS, fatal: false,
+          })}`)
+        }
+
+        // crisisAudioStreamed reports server-side streaming only — it is NOT
+        // proof the member heard anything. Text and audio are reported
+        // separately because they can and do diverge.
+        console.log(`[crisis] ${JSON.stringify({
+          persona: personaKey,
+          weight: classification.weight,
+          crisisActivated,
+          crisisTextSent,
+          crisisAudioStreamed,
+        })}`)
+      } else {
+        // Not silently treated as "no crisis" — this turn was never evaluated.
+        console.warn(`[crisis] ${JSON.stringify({
+          persona: personaKey,
+          weight: null,
+          crisisActivated: false,
+          crisisTextSent: false,
+          crisisAudioStreamed: false,
+          note: 'classification unavailable — crisis NOT evaluated',
+        })}`)
+      }
+
+      // History must equal exactly what the member received, suffix included.
+      conversationHistory.push({ role: 'assistant', content: deliveredResponse })
+      if (TEST_HISTORY_FILE) {
+        try {
+          require('fs').appendFileSync(
+            TEST_HISTORY_FILE,
+            JSON.stringify(fingerprintHistory(conversationHistory)) + '\n'
+          )
+        } catch { /* test hook must never affect the turn */ }
+      }
       ws.send(JSON.stringify({ type: 'response_complete' }))
       ws.send(JSON.stringify({ type: 'status', message: 'listening' }))
-      console.log(`[${personaId}] Complete: "${fullResponse}"`)
+      // Metadata only — the generated reply is never written to logs.
+      console.log(`[complete] ${JSON.stringify({
+        persona: personaKey,
+        chars: deliveredResponse.length,
+        status: 'ok',
+        elapsedMs: Date.now() - turnStart,
+      })}`)
 
     } catch (err) {
-      console.error(`[${personaId}] Anthropic error:`, err)
+      // Never log the error or any property of it. An Anthropic APIError carries
+      // the provider's response body, headers and request-id, and the SDK builds
+      // err.message FROM that body — all outside our trust boundary. The request
+      // itself contains the prompt and full conversation history.
+      // Only a locally-validated numeric status survives.
+      console.error(`[anthropic] ${JSON.stringify({
+        component: 'anthropic', persona: personaKey,
+        failure: FAILURE.ANTHROPIC,
+        status: safeStatus(err && err.status), fatal: false,
+      })}`)
       ws.send(JSON.stringify({ type: 'error', message: 'Response generation failed' }))
     }
   }
 
+  // ws.send() does NOT throw when the socket is closed (ws 8.18.3) — it reports
+  // the failure only through the completion callback. Bare sends therefore prove
+  // nothing. Used where we must know whether bytes actually reached the wire.
+  // NOTE: true means the server accepted the frame for transmission, NOT that
+  // the member's client rendered it. The server cannot establish receipt.
+  function sendTextTracked(payload) {
+    return new Promise((resolve) => {
+      if (ws.readyState !== WebSocket.OPEN) return resolve(false)
+      ws.send(payload, (err) => resolve(!err))
+    })
+  }
+
   // ── ELEVENLABS — PCM 16kHz mono (required for Simli) ──
+  // RETURN SEMANTICS — true if and only if ALL of the following hold:
+  //   1. the request succeeded (HTTP ok, no transport error),
+  //   2. the response body was consumed to EOF without a read error,
+  //   3. at least one NON-ZERO-length chunk was handed to ws.send(),
+  //   4. the socket stayed OPEN for every chunk.
+  // Otherwise false — including empty text, an all-zero-byte stream, and a read
+  // failure part-way through real audio (a partial stream is not a streamed one).
+  // Ordinary callers may ignore the value; send behavior is unchanged, this only
+  // reports what already happened.
+  // NOTE: true means the server streamed the audio, NOT that the client played it.
   async function sendToElevenLabs(text, voiceId) {
-    if (!text.trim()) return
+    if (!text.trim()) return false
 
     // Strip markdown before TTS so ElevenLabs doesn't read asterisks, underscores,
     // hashes, or backticks aloud. Preserves sentence content and punctuation.
@@ -1874,7 +2078,7 @@ wss.on('connection', (ws, req) => {
       .replace(/~~([^~]+)~~/g, '$1')          // ~~strikethrough~~
       .trim()
 
-    if (!text) return
+    if (!text) return false
 
     try {
       const response = await fetch(
@@ -1899,11 +2103,17 @@ wss.on('connection', (ws, req) => {
       )
 
       if (!response.ok) {
-        console.error(`ElevenLabs error [${voiceId}]:`, response.statusText)
-        return
+        console.error(`[tts] ${JSON.stringify({
+          component: 'elevenlabs', persona: personaKey,
+          failure: FAILURE.TTS_HTTP, status: safeStatus(response.status), fatal: false,
+        })}`)
+        return false
       }
 
       const reader = response.body.getReader()
+      let streamedAny = false
+      let socketClosed = false
+      try {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -1913,10 +2123,34 @@ wss.on('connection', (ws, req) => {
           // and drags trailing bytes that Simli plays as static. This is the
           // scratchy-audio fix. Was: ws.send(value.buffer)
           ws.send(value)
+          // Only a non-empty chunk counts as audio actually streamed. A stream
+          // of zero-byte chunks reaches EOF without delivering any audio.
+          if (value.length > 0) streamedAny = true
+        } else {
+          // Chunk dropped because the socket is gone. Behavior unchanged (the
+          // original also skipped the send); we only record that it happened.
+          socketClosed = true
         }
       }
+      } catch (streamErr) {
+        // Read failed part-way through. Bytes may already have reached the
+        // socket, but the stream did not complete — that is NOT success.
+        console.error(`[tts] ${JSON.stringify({
+          component: 'elevenlabs', persona: personaKey,
+          failure: FAILURE.TTS_STREAM, fatal: false,
+        })}`)
+        return false
+      }
+      return streamedAny && !socketClosed
     } catch (err) {
-      console.error('ElevenLabs error:', err)
+      // Never log the raw error, nor any property of it: provider/undici errors
+      // carry the request (assistant text, crisis suffix) in cause/body, and
+      // name/code are equally provider-controlled.
+      console.error(`[tts] ${JSON.stringify({
+        component: 'elevenlabs', persona: personaKey,
+        failure: FAILURE.TTS_TRANSPORT, fatal: false,
+      })}`)
+      return false
     }
   }
 
@@ -1940,7 +2174,10 @@ wss.on('connection', (ws, req) => {
               generateResponse(currentTranscript)
                 .then(() => { processingResponse = false })
                 .catch(err => {
-                  console.error(`[${personaId}] Error:`, err)
+                  console.error(`[anthropic] ${JSON.stringify({
+                    component: 'generate-response', persona: personaKey,
+                    failure: FAILURE.ANTHROPIC, fatal: false,
+                  })}`)
                   processingResponse = false
                 })
             }
@@ -1967,14 +2204,23 @@ wss.on('connection', (ws, req) => {
             generateResponse(currentTranscript)
               .then(() => { processingResponse = false })
               .catch(err => {
-                console.error(`[${personaId}] Error:`, err)
+                console.error(`[anthropic] ${JSON.stringify({
+                  component: 'generate-response', persona: personaKey,
+                  failure: FAILURE.ANTHROPIC, fatal: false,
+                })}`)
                 processingResponse = false
               })
           }
           return
         }
       } catch (err) {
-        console.error(`[${personaId}] Parse error:`, err)
+        // Do NOT log `err` NOR any property of it — V8's JSON.parse SyntaxError
+        // echoes the first ~10 characters of the input ("Unexpected token 'I',
+        // \"I never to\"..."), which for this branch is member-sent content.
+        console.error(`[parse] ${JSON.stringify({
+          component: 'ws-message', persona: personaKey,
+          failure: 'malformed_json_message', fatal: false,
+        })}`)
       }
     }
 

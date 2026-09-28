@@ -5,7 +5,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node test-mra.js && node test-runtime.js",
+    "test:units": "node test-mra.js",
+    "test:runtime": "node test-runtime.js"
   },
   "engines": {
     "node": ">=18.0.0"
