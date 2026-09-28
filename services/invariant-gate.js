@@ -322,7 +322,15 @@ function buildRegenerationConstraints(violations) {
   const types = new Set(violations.map(v => v.invariant));
 
   if (types.has('NEVER_ABANDONS')) {
-    constraints.push('CRITICAL: Do NOT suggest professional help, hotlines, or say you cannot help. Stay present. Say "I\'m here." Hold the space.');
+    // CRISIS PRECEDENCE: this used to read "Do NOT suggest professional help,
+    // hotlines, or say you cannot help." That instruction undoes crisis
+    // precedence — it tells the model to withhold human support on any turn
+    // that regenerates, including a turn where the member is in crisis, which
+    // contradicts the rule that appropriate human help must never be
+    // suppressed to preserve character. What is prohibited is WITHDRAWAL, not
+    // referral. See services/release-policy.js for the enforced version; the
+    // release path uses buildReleaseConstraints, not this function.
+    constraints.push('CRITICAL: Do NOT withdraw, disclaim your nature, or say you cannot help. Stay present. Say "I\'m here." Hold the space. You MAY still point toward human or professional support, but only while making clear that you are staying.');
   }
   if (types.has('NEVER_JUDGES')) {
     constraints.push('Do NOT evaluate, judge, or label their behavior. Hold the frame without moral commentary.');

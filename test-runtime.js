@@ -38,6 +38,26 @@ const SUFFIX = " I'm here with you. If you're in crisis, please reach out to 988
 const CRISIS_MSG = "I don't want to be here anymore"
 const W21_NON_CRISIS = 'I never told anyone but when I was a kid my father abandoned us and it still haunts me'
 
+// Child-process teardown. A leaked server child from a previous run holds its
+// port and makes the NEXT run fail with ECONNREFUSED, which was observed
+// directly during the Module 4 audit. Track every spawned server and kill it on
+// any exit path, not just the happy one.
+const CHILDREN = new Set()
+const SERVERS = new Set()   // in-process mocks bound to a FIXED port
+function reapChildren() {
+  for (const c of CHILDREN) { try { c.kill('SIGKILL') } catch {} }
+  CHILDREN.clear()
+  // The mock Anthropic binds a fixed port. If an assertion throws mid-session
+  // the normal close never runs, and the next run dies with EADDRINUSE.
+  for (const s of SERVERS) { try { s.close() } catch {} }
+  SERVERS.clear()
+}
+process.on('exit', reapChildren)
+process.on('SIGINT', () => { reapChildren(); process.exit(130) })
+process.on('SIGTERM', () => { reapChildren(); process.exit(143) })
+process.on('uncaughtException', (e) => { reapChildren(); console.error('UNCAUGHT:', e && e.message); process.exit(1) })
+process.on('unhandledRejection', (e) => { reapChildren(); console.error('UNHANDLED:', e && e.message); process.exit(1) })
+
 let passed = 0, failed = 0
 const failures = []
 const check = (ok, name, detail) => {
@@ -155,6 +175,7 @@ async function runSession({ persona = 'aline', turns, ttsMode = null, ttsMatch =
     res.write(sse({ type: 'message_stop' }))
     res.end()
   })
+  SERVERS.add(anth)
   await new Promise(r => anth.listen(MOCK_PORT, r))
 
   const env = {
@@ -170,6 +191,8 @@ async function runSession({ persona = 'aline', turns, ttsMode = null, ttsMatch =
   if (anthropicUnreachable) env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:9'
 
   const srv = spawn(process.execPath, ['-e', LAUNCHER], { cwd: ROOT, env })
+  CHILDREN.add(srv)
+  srv.on('exit', () => CHILDREN.delete(srv))
   const logs = []
   const cap = (b) => String(b).split('\n').filter(Boolean).forEach(l => logs.push(l))
   srv.stdout.on('data', cap); srv.stderr.on('data', cap)
@@ -220,6 +243,7 @@ async function runSession({ persona = 'aline', turns, ttsMode = null, ttsMatch =
   try { ws.close() } catch {}
   srv.kill()
   await new Promise(r => anth.close(r))
+  SERVERS.delete(anth)
 
   const parseAll = (tag) => logs.filter(l => l.includes(tag))
     .map(l => { try { return JSON.parse(l.slice(l.indexOf('{'))) } catch { return null } })
@@ -318,8 +342,19 @@ async function main() {
 
   console.log('\n═══ RUNTIME: RESPONSE ALREADY CONTAINS 988 ═══\n')
   {
+    // The reply now carries PRESENCE alongside the resource ("I am here with
+    // you"). Under release-policy crisis precedence, a referral is appropriate
+    // support only when the confidante also stays; a bare referral with no
+    // presence is still abandonment and is blocked. That is the same rule
+    // test-mra.js asserts when it requires "Please call 988 if you're in
+    // crisis." on its own to fail the gate.
+    //
+    // The scenario's purpose is unchanged: a reply that already contains a
+    // crisis resource must not get a second one appended.
     const r = await runSession({ turns: [
-      { userText: CRISIS_MSG, reply: 'Brontide. Please call 988 if you need to.' },
+      // Presence phrased WITHOUT "here with you", so the assertion below is
+      // detecting the appended suffix rather than this reply's own wording.
+      { userText: CRISIS_MSG, reply: 'Brontide. I am here. Please call 988 if you need to.' },
       { userText: 'ok', reply: 'Mm.' },
     ]})
     const t = r.observed[0]

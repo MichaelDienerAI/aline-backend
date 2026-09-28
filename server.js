@@ -4,6 +4,11 @@ const { createClient } = require('@deepgram/sdk')
 const Anthropic = require('@anthropic-ai/sdk')
 const { analyzeMessage } = require('./services/classifier')
 const { crisisOverride } = require('./services/crisis-override')
+const {
+  evaluateReleaseSafe,
+  takeCompleteSentences,
+  APPROVED_FALLBACK,
+} = require('./services/release-policy')
 const crypto = require('crypto')
 
 // ── BOUNDED FAILURE TAXONOMY ──────────────────────────────────────
@@ -30,6 +35,14 @@ const safeStatus = (v) => (Number.isInteger(v) && v >= 100 && v <= 599 ? v : nul
 // Emits SHA-256 fingerprints, never content — so even if it were switched on by
 // accident it cannot disclose a conversation. Lets tests assert on the ACTUAL
 // conversationHistory array rather than a value derived from it.
+// ── TTS BOUNDS ──────────────────────────────────────────────────────
+// Every outbound vendor call needs an upper bound. Before this, the
+// ElevenLabs fetch had none, and synthesis was awaited inside the stream
+// loop, so a stalled vendor froze text delivery indefinitely with no
+// member-visible state. Overridable for tests; both default to real bounds.
+const TTS_REQUEST_TIMEOUT_MS = Number(process.env.TTS_REQUEST_TIMEOUT_MS) || 15000
+const TTS_DRAIN_TIMEOUT_MS = Number(process.env.TTS_DRAIN_TIMEOUT_MS) || 20000
+
 const TEST_HISTORY_FILE = process.env.ALINE_TEST_HISTORY_FILE || null
 function fingerprintHistory(history) {
   return history.map(m => ({
@@ -1895,27 +1908,144 @@ wss.on('connection', (ws, req) => {
         ]
       }
 
-      const stream = await anthropic.messages.stream(streamConfig)
+      // ── MODULE 4 / STEP 3: GATED RELEASE ──────────────────────────────
+      // Text no longer leaves during generation. Before this, ws.send() ran
+      // unconditionally inside the stream loop, so nothing could be withheld
+      // and any verdict necessarily arrived after the member had already read
+      // and heard the sentence. Every member-facing frame now passes through
+      // evaluateReleaseSafe() first.
+      //
+      // Cumulative sentence-prefix gating: at each complete sentence boundary
+      // the whole response-so-far is evaluated. An approved sentence is
+      // released immediately, so the turn still streams. A sentence carrying a
+      // CRITICAL violation is never sent and never synthesized; generation
+      // stops there and exactly one regeneration runs.
+      //
+      // The policy takes no classification argument by design, so a classifier
+      // failure cannot skip, weaken, or change the release decision.
 
-      let textBuffer = ''
+      let releasedText = ''
+      let regenerationsUsed = 0
+      let releaseOutcome = 'approved'   // approved | regenerated | fallback | gate_error
+      let blockedCount = 0
 
-      for await (const chunk of stream) {
-        if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
-          const text = chunk.delta.text
-          fullResponse += text
-          textBuffer += text
-          ws.send(JSON.stringify({ type: 'response_text', text }))
+      // Serial TTS queue, deliberately OFF the text path. Synthesis used to be
+      // awaited inside the stream loop, which suspended the async iterator and
+      // let a slow vendor freeze text delivery with no bound. Text frames now
+      // go out first and synthesis runs behind them.
+      let ttsChain = Promise.resolve()
+      let ttsFailed = false
+      let ttsEnqueued = 0
 
-          if (/[.!?]/.test(textBuffer) && textBuffer.length > 20) {
-            await sendToElevenLabs(textBuffer.trim(), voiceId)
-            textBuffer = ''
+      function enqueueTTS(segment) {
+        if (!segment || !segment.trim()) return
+        ttsEnqueued++
+        ttsChain = ttsChain
+          .then(() => sendToElevenLabs(segment.trim(), voiceId))
+          .then((ok) => { if (!ok) ttsFailed = true })
+          .catch(() => { ttsFailed = true })
+      }
+
+      // Text frame first, synthesis after.
+      //
+      // Accumulation does NOT depend on the send succeeding. That preserves the
+      // pre-existing history semantics, where history follows the bytes the
+      // server emitted for the turn; a mid-turn socket close is recorded in
+      // telemetry rather than by truncating history. Tightening this is a
+      // separate change with its own test implications and is out of scope here.
+      let releaseSendFailed = false
+      async function releaseSegment(segment) {
+        const sent = await sendTextTracked(
+          JSON.stringify({ type: 'response_text', text: segment })
+        )
+        if (!sent) releaseSendFailed = true
+        releasedText += segment
+        enqueueTTS(segment)
+        return sent
+      }
+
+      // Drive one stream, gating at every complete sentence.
+      async function streamWithGate(activeStream) {
+        // An aborted SDK stream can emit late; swallow it rather than letting
+        // it surface as an unhandled rejection on the connection.
+        if (typeof activeStream.on === 'function') activeStream.on('error', () => {})
+
+        let buffer = ''
+        for await (const chunk of activeStream) {
+          if (chunk.type !== 'content_block_delta') continue
+          if (chunk.delta.type !== 'text_delta') continue
+          buffer += chunk.delta.text
+
+          const { sentences, remainder } = takeCompleteSentences(buffer, false)
+          buffer = remainder
+
+          for (const sentence of sentences) {
+            const verdict = evaluateReleaseSafe(releasedText + sentence)
+            if (!verdict.approved) {
+              try { if (typeof activeStream.abort === 'function') activeStream.abort() } catch {}
+              return { blocked: true, verdict }
+            }
+            await releaseSegment(sentence)
           }
+        }
+
+        // Trailing fragment. Length, not trim(): a whitespace-only tail still
+        // has to be released, or the delivered bytes stop matching what the
+        // model produced and history drifts from the transcript. enqueueTTS
+        // ignores whitespace-only segments, so no empty synthesis call is made.
+        if (buffer.length > 0) {
+          const verdict = evaluateReleaseSafe(releasedText + buffer)
+          if (!verdict.approved) return { blocked: true, verdict }
+          await releaseSegment(buffer)
+        }
+        return { blocked: false, verdict: null }
+      }
+
+      const stream = await anthropic.messages.stream(streamConfig)
+      let result = await streamWithGate(stream)
+
+      if (result.blocked) {
+        blockedCount++
+        // Exactly one regeneration. Never a second retry, never a third attempt.
+        regenerationsUsed = 1
+        releaseOutcome = result.verdict.gateError ? 'gate_error' : 'regenerated'
+
+        // Constraints come from release-policy, NOT from
+        // invariant-gate.buildRegenerationConstraints, which tells the model to
+        // avoid professional help and hotlines outright and would undo crisis
+        // precedence on any turn that regenerates for an unrelated reason.
+        const regenMessages = releasedText
+          ? [...conversationHistory, { role: 'assistant', content: releasedText }]
+          : [...conversationHistory]
+
+        const regenStream = await anthropic.messages.stream({
+          ...streamConfig,
+          system: `${systemPrompt}\n\n${result.verdict.constraints}`,
+          messages: regenMessages,
+        })
+        result = await streamWithGate(regenStream)
+
+        if (result.blocked) {
+          blockedCount++
+          // Second failure. Deterministic approved fallback, then terminate.
+          // Silence is not an acceptable terminal state. APPROVED_FALLBACK is
+          // asserted to pass the policy standalone in the acceptance tests.
+          releaseOutcome = 'fallback'
+          const prefix = releasedText && !/\s$/.test(releasedText) ? ' ' : ''
+          await releaseSegment(prefix + APPROVED_FALLBACK)
         }
       }
 
-      if (textBuffer.trim()) {
-        await sendToElevenLabs(textBuffer.trim(), voiceId)
-      }
+      // History and the crisis layer key off what the member actually received.
+      fullResponse = releasedText
+
+      console.log(`[release] ${JSON.stringify({
+        persona: personaKey,
+        outcome: releaseOutcome,
+        regenerationsUsed,
+        blockedCount,
+        releasedChars: releasedText.length,
+      })}`)
 
       // ── MODULE 4 / STEP 2: CRISIS OVERRIDE ──
       // Runs after generation and after the last TTS flush, but before the
@@ -2002,6 +2132,28 @@ wss.on('connection', (ws, req) => {
         })}`)
       }
 
+      // ── BOUNDED TTS DRAIN ──────────────────────────────────────────────
+      // Synthesis runs behind the text path, so approved text has already
+      // reached the member by now. Wait for audio only up to a bound, then
+      // finish the turn regardless. A stalled vendor delays audio; it can no
+      // longer hold the turn open or block text that was already approved.
+      if (ttsEnqueued > 0) {
+        const drained = await Promise.race([
+          ttsChain.then(() => true).catch(() => false),
+          new Promise((resolve) => setTimeout(() => resolve(false), TTS_DRAIN_TIMEOUT_MS)),
+        ])
+        if (!drained) ttsFailed = true
+      }
+
+      // Audio failure is explicit and bounded, never silent. The member is told
+      // the reply is text-only rather than being left waiting for speech.
+      if (ttsFailed) {
+        await sendTextTracked(JSON.stringify({
+          type: 'audio_unavailable',
+          message: 'Audio is unavailable for this reply. The text above is complete.',
+        }))
+      }
+
       // History must equal exactly what the member received, suffix included.
       conversationHistory.push({ role: 'assistant', content: deliveredResponse })
       if (TEST_HISTORY_FILE) {
@@ -2080,11 +2232,18 @@ wss.on('connection', (ws, req) => {
 
     if (!text) return false
 
+    // Bounded: a stalled vendor must not hold this call open forever. The timer
+    // is cleared in the finally block below so a fast response does not keep the
+    // event loop alive.
+    const ttsAbort = new AbortController()
+    const ttsTimer = setTimeout(() => ttsAbort.abort(), TTS_REQUEST_TIMEOUT_MS)
+
     try {
       const response = await fetch(
         `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=pcm_16000`,
         {
           method: 'POST',
+          signal: ttsAbort.signal,
           headers: {
             'xi-api-key': process.env.ELEVENLABS_API_KEY,
             'Content-Type': 'application/json',
@@ -2151,6 +2310,8 @@ wss.on('connection', (ws, req) => {
         failure: FAILURE.TTS_TRANSPORT, fatal: false,
       })}`)
       return false
+    } finally {
+      clearTimeout(ttsTimer)
     }
   }
 

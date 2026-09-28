@@ -1,0 +1,31 @@
+AFTER CAPTURE — post-change behavior
+========================================================================
+
+[F1] crisis suffix
+  raw checkNeverAbandons : 2 violations (detector unchanged, by design)
+  release policy         : approved=true presence=true blocking=0
+  RESULT: FIXED
+
+[F2] reply + crisis suffix
+  raw enforceInvariants  : requiresRegeneration=true
+  release policy         : approved=true
+  RESULT: FIXED
+
+[F3] weight dependence
+  raw gate W1  regen=false / W21 regen=true  -> differ=true
+  release policy: approved=true (no weight parameter; arity=1)
+  RESULT: FIXED — release decision cannot vary with weight
+
+[F4] regeneration constraints
+  invariant-gate  : forbids human support outright = false
+  release-policy  : forbids human support outright = false
+  RESULT: FIXED
+
+[F5] mixed support + unrelated exit violation
+  approved=false  blocking=2
+    EXIT "I can't help you with this"
+    EXIT "I'm just an AI"
+  RESULT: FIXED — exit blocked, referral exempt
+
+========================================================================
+END AFTER CAPTURE
