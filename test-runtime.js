@@ -32,6 +32,114 @@ const HIST_LOG = path.join(os.tmpdir(), `aline-runtime-hist-${process.pid}.jsonl
 const sha16 = (str) => require('crypto').createHash('sha256').update(str).digest('hex').slice(0, 16)
 const MOCK_PORT = 4309
 let nextPort = 4310
+let sessionSeq = 0
+
+// ---------------------------------------------------------------------------
+// FAILURE OBSERVABILITY (Cycle 8 — parity with test-release.js, Cycle 3)
+//
+// Diagnostic only: adds no assertion, changes no timing, and cannot turn a
+// failing check into a passing one. The error formatters below are a verbatim
+// copy of test-release.js so both suites describe the same failure the same
+// way. Before this, a child that exited, a child that was slow to listen, and
+// a child that crashed on load all produced a byte-identical FATAL record here,
+// because the child's exit code, signal and output were discarded.
+//
+// Secret hygiene: errors are reported by ALLOWLISTED field only; nothing here
+// spreads or serializes an arbitrary object or reads process.env. Messages,
+// field values, stacks and child output lines pass through redact(), which is
+// best-effort pattern matching: credential shapes it does not match print as-is.
+// ---------------------------------------------------------------------------
+const T_START = Date.now()
+const SAFE_ERR_FIELDS = ['code', 'errno', 'syscall', 'address', 'port', 'path', 'hostname', 'type', 'reason']
+const redact = (v) => String(v)
+  // An auth scheme word (Bearer/Basic/Token) is kept and the credential AFTER it
+  // is redacted; matching only the scheme word let the credential through.
+  .replace(/(authorization|api[-_]?key|token|secret|password)(["'\s:=]*)((?:bearer|basic|token)\s+)?(\S+)/gi, '$1$2$3<redacted>')
+  .replace(/\bsk-[A-Za-z0-9_-]{3,}/g, '<redacted>')
+  // Bare key material is unseparated alphanumeric; requiring no '-'/'_' keeps
+  // hyphen-separated path and log words readable while still catching raw keys.
+  .replace(/\b[A-Za-z0-9]{32,}\b/g, '<redacted>')
+
+// One line that is NEVER empty, so the Cycle 1 output can no longer occur.
+const oneLine = (e) => {
+  if (e === null || e === undefined) return `<nothing thrown: ${String(e)}>`
+  if (typeof e !== 'object') return `<non-error ${typeof e}> ${redact(e)}`
+  const bits = [e.name || 'Error', e.message ? redact(e.message) : '<EMPTY MESSAGE>']
+  if (e.code) bits.push(`code=${redact(e.code)}`)
+  if (Array.isArray(e.errors)) bits.push(`nested=${e.errors.length}`)
+  return bits.join(' ')
+}
+
+function describeError(e, depth = 0, seen = new Set()) {
+  const pad = '  '.repeat(depth + 1)
+  if (e === null || e === undefined) return `${pad}<nothing thrown: ${String(e)}>`
+  if (typeof e !== 'object') return `${pad}<non-error ${typeof e}>: ${redact(e)}`
+  if (seen.has(e)) return `${pad}<circular reference>`
+  seen.add(e)
+  const out = []
+  out.push(`${pad}name    : ${e.name || '<none>'}`)
+  out.push(`${pad}message : ${e.message ? redact(e.message) : '<EMPTY — error carried no message>'}`)
+  const f = SAFE_ERR_FIELDS.filter(k => e[k] !== undefined)
+  if (f.length) out.push(`${pad}fields  : ${f.map(k => `${k}=${redact(e[k])}`).join('  ')}`)
+  if (e.stack) {
+    const frames = redact(e.stack).split('\n').slice(0, 7)
+    out.push(`${pad}stack   : ${frames[0].trim()}`)
+    for (const fr of frames.slice(1)) out.push(`${pad}          ${fr.trim()}`)
+  } else {
+    out.push(`${pad}stack   : <none captured>`)
+  }
+  // A dual-stack connect failure puts the real errno/address/port in errors[],
+  // not on the top-level error, so nested errors are expanded here.
+  if (Array.isArray(e.errors) && depth < 3) {
+    out.push(`${pad}errors[]: ${e.errors.length} nested`)
+    e.errors.forEach((sub, i) => {
+      out.push(`${pad}  [${i}]`)
+      out.push(describeError(sub, depth + 2, seen))
+    })
+  }
+  if (e.cause && depth < 3) {
+    out.push(`${pad}cause   :`)
+    out.push(describeError(e.cause, depth + 2, seen))
+  }
+  return out.join('\n')
+}
+
+// In-flight context: lets a throw anywhere be placed in time and against the
+// child process. Written as the suite advances, read only by reportFailure.
+const DIAG = { phase: 'startup (module load / policy level)', session: null }
+
+function reportFailure(label, e) {
+  const L = []
+  L.push(`\n${label}: ${oneLine(e)}`)
+  L.push('═══════════════════════════════════════════')
+  L.push(`${label} — FAILURE DIAGNOSTIC`)
+  L.push('═══════════════════════════════════════════')
+  L.push(`elapsedMs (suite)   : ${Date.now() - T_START}`)
+  L.push(`phase at failure    : ${DIAG.phase}`)
+  L.push(`checks at failure   : ${passed} passed, ${failed} failed`)
+  L.push('error:')
+  L.push(describeError(e))
+  const s = DIAG.session
+  if (!s) {
+    L.push('child/session       : none started yet (failure precedes first server launch)')
+  } else {
+    L.push('child/session:')
+    L.push(`  session           : #${s.n}  serverPort=${s.port}  mockPort=${MOCK_PORT}`)
+    L.push(`  completed cleanly : ${s.done ? 'yes (failure is after this session)' : 'no'}`)
+    L.push(`  elapsedMs(session): ${Date.now() - s.t0}`)
+    L.push(`  spawn requested   : ${s.tSpawn ? `+${s.tSpawn - s.t0}ms into session` : '<never reached spawn>'}`)
+    L.push(`  child pid         : ${s.pid === undefined ? '<none assigned>' : s.pid}`)
+    L.push(`  spawn error       : ${s.spawnError ? oneLine(s.spawnError) : 'none'}`)
+    L.push(`  readiness wait    : ${s.readinessWaitMs === undefined ? '<not reached>' : `${s.readinessWaitMs}ms fixed sleep (unchanged by this instrumentation)`}`)
+    L.push(`  child exited      : ${s.exited ? `YES code=${s.exitCode} signal=${s.exitSignal} at +${s.exitAt - s.tSpawn}ms after spawn` : 'no — still running at time of failure'}`)
+    L.push(`  alive at connect  : ${s.aliveAtConnect === undefined ? '<not reached>' : s.aliveAtConnect}`)
+    L.push(`  websocket opened  : ${s.wsOpened ? `yes at +${s.wsOpenAt - s.tSpawn}ms after spawn` : 'NO'}`)
+    L.push(`  child output      : ${s.logs.length} line(s)${s.logs.length ? ', last 15 (redacted):' : ' — child produced no output'}`)
+    for (const l of s.logs.slice(-15)) L.push(`    | ${redact(l)}`)
+  }
+  L.push('═══════════════════════════════════════════')
+  console.error(L.join('\n'))
+}
 
 const VOICE = { aline: 'knPeAXsHZ6FVdoLHMtRJ', chase: 'n6PxDvHhqw89qVi3Yao2' }
 const SUFFIX = " I'm here with you. If you're in crisis, please reach out to 988."
@@ -55,8 +163,8 @@ function reapChildren() {
 process.on('exit', reapChildren)
 process.on('SIGINT', () => { reapChildren(); process.exit(130) })
 process.on('SIGTERM', () => { reapChildren(); process.exit(143) })
-process.on('uncaughtException', (e) => { reapChildren(); console.error('UNCAUGHT:', e && e.message); process.exit(1) })
-process.on('unhandledRejection', (e) => { reapChildren(); console.error('UNHANDLED:', e && e.message); process.exit(1) })
+process.on('uncaughtException', (e) => { reapChildren(); reportFailure('UNCAUGHT', e); process.exit(1) })
+process.on('unhandledRejection', (e) => { reapChildren(); reportFailure('UNHANDLED', e); process.exit(1) })
 
 let passed = 0, failed = 0
 const failures = []
@@ -148,6 +256,8 @@ async function runSession({ persona = 'aline', turns, ttsMode = null, ttsMatch =
   try { fs.unlinkSync(TTS_LOG) } catch {}
   try { fs.unlinkSync(HIST_LOG) } catch {}
   const port = nextPort++
+  const SX = { n: ++sessionSeq, port, t0: Date.now(), logs: [], done: false }
+  DIAG.session = SX
   let turnIdx = 0
   const requests = []
 
@@ -190,21 +300,36 @@ async function runSession({ persona = 'aline', turns, ttsMode = null, ttsMatch =
   if (ttsSlowMs) env.TTS_SLOW_MS = String(ttsSlowMs)
   if (anthropicUnreachable) env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:9'
 
+  DIAG.phase = `launching server session #${SX.n} on port ${port}`
+  SX.tSpawn = Date.now()
   const srv = spawn(process.execPath, ['-e', LAUNCHER], { cwd: ROOT, env })
+  SX.pid = srv.pid
   CHILDREN.add(srv)
-  srv.on('exit', () => CHILDREN.delete(srv))
-  const logs = []
+  // Diagnostic capture of child fate. Previously the exit code and signal were
+  // discarded here, so "never launched" and "launched then died" were identical
+  // in the record.
+  srv.on('error', (e) => { SX.spawnError = e })
+  srv.on('exit', (code, signal) => {
+    CHILDREN.delete(srv)
+    SX.exited = true; SX.exitCode = code; SX.exitSignal = signal; SX.exitAt = Date.now()
+  })
+  const logs = SX.logs
   const cap = (b) => String(b).split('\n').filter(Boolean).forEach(l => logs.push(l))
   srv.stdout.on('data', cap); srv.stderr.on('data', cap)
+  SX.readinessWaitMs = 900
   await new Promise(r => setTimeout(r, 900))
+  // Observation only. Deliberately does NOT wait for readiness: adding a poll
+  // here would alter the behaviour under investigation.
+  SX.aliveAtConnect = SX.exited ? `no — child already exited (code=${SX.exitCode} signal=${SX.exitSignal})` : 'yes — child process still running'
+  DIAG.phase = `opening websocket to port ${port} (session #${SX.n}, after ${SX.readinessWaitMs}ms fixed startup wait)`
 
   const observed = []
   const ws = new WebSocket(`ws://localhost:${port}/?persona=${persona}&demo=1`)
   let events = [], audioFrames = [], timeline = [], closed = false
 
   await new Promise((resolve, reject) => {
-    const bail = setTimeout(() => reject(new Error('timeout opening socket')), 10000)
-    ws.on('open', () => { clearTimeout(bail); resolve() })
+    const bail = setTimeout(() => reject(new Error(`timeout opening socket after 10000ms (session #${SX.n}, port ${port})`)), 10000)
+    ws.on('open', () => { clearTimeout(bail); SX.wsOpened = true; SX.wsOpenAt = Date.now(); resolve() })
     ws.on('error', (e) => { clearTimeout(bail); reject(e) })
   })
 
@@ -224,6 +349,7 @@ async function runSession({ persona = 'aline', turns, ttsMode = null, ttsMatch =
   })
 
   for (turnIdx = 0; turnIdx < turns.length; turnIdx++) {
+    DIAG.phase = `session #${SX.n} turn ${turnIdx + 1}/${turns.length}`
     events = []; audioFrames = []; timeline = []
     const before = readTts().length
     ws.send(JSON.stringify({ type: 'message', content: turns[turnIdx].userText }))
@@ -252,6 +378,7 @@ async function runSession({ persona = 'aline', turns, ttsMode = null, ttsMatch =
   let histSnapshots = []
   try { histSnapshots = fs.readFileSync(HIST_LOG, 'utf8').split('\n').filter(Boolean).map(JSON.parse) } catch {}
 
+  SX.done = true
   return { observed, requests, logs, histSnapshots, crisis: parseAll('[crisis]'), complete: parseAll('[complete]') }
 }
 
@@ -523,4 +650,4 @@ async function main() {
   process.exit(failed > 0 ? 1 : 0)
 }
 
-main().catch(err => { console.error('FATAL:', err); process.exit(1) })
+main().catch((e) => { reportFailure('FATAL', e); process.exit(1) })
