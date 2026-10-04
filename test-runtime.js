@@ -594,7 +594,10 @@ async function main() {
     // Allowlist guard on production source: inside the [anthropic] failure logs
     // the ONLY permitted reference to `err` is safeStatus(err && err.status).
     const blocks = [...src.matchAll(/console\.error\(`\[anthropic\] \$\{JSON\.stringify\(\{([\s\S]*?)\}\)\}`\)/g)].map(m => m[1])
-    check(blocks.length === 3, 'found all three bounded anthropic log sites', `found ${blocks.length}`)
+    // Two sites: generateResponse's catch and the single ws text-frame handler.
+    // (A third, duplicate handler for string frames was unreachable under ws v8
+    // and was removed when frame routing moved to the isBinary flag.)
+    check(blocks.length === 2, 'found both bounded anthropic log sites', `found ${blocks.length}`)
     const errRefs = blocks.flatMap(b => [...b.matchAll(/err[^,\n]*/g)].map(x => x[0].trim()))
     check(errRefs.length === 1 && errRefs[0] === 'err && err.status)',
       'anthropic logs reference `err` ONLY inside safeStatus(err && err.status)', JSON.stringify(errRefs))

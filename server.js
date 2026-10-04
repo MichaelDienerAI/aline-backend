@@ -2355,73 +2355,55 @@ wss.on('connection', (ws, req) => {
   }
 
   // ── MESSAGE HANDLER ──
-  ws.on('message', (data) => {
-    let messageData = data
-    if (Buffer.isBuffer(data)) {
+  // ws v8 delivers text frames as Buffers too, so routing is by the isBinary
+  // flag, not by type or content sniffing. Only binary frames are audio. Every
+  // text frame is a control or chat message and must never reach Deepgram:
+  // the client's {"type":"start"|"stop"} frames, malformed JSON, and non-string
+  // content were previously forwarded into the speech-to-text stream.
+  ws.on('message', (data, isBinary) => {
+    if (!isBinary) {
+      let msg
       try {
-        messageData = data.toString('utf8')
-        if (messageData.startsWith('{')) {
-          const msg = JSON.parse(messageData)
-          if (msg.type === 'ping') {
-            ws.send(JSON.stringify({ type: 'pong' }))
-            return
-          }
-          if (msg.type === 'message' && msg.content?.trim()) {
-            if (!processingResponse) {
-              currentTranscript = msg.content.trim()
-              processingResponse = true
-              ws.send(JSON.stringify({ type: 'status', message: 'thinking' }))
-              generateResponse(currentTranscript)
-                .then(() => { processingResponse = false })
-                .catch(err => {
-                  console.error(`[anthropic] ${JSON.stringify({
-                    component: 'generate-response', persona: personaKey,
-                    failure: FAILURE.ANTHROPIC, fatal: false,
-                  })}`)
-                  processingResponse = false
-                })
-            }
-            return
-          }
-        }
+        msg = JSON.parse(data.toString('utf8'))
       } catch {
-        // Not JSON — binary audio, fall through
-      }
-    }
-
-    if (typeof data === 'string') {
-      try {
-        const msg = JSON.parse(data)
-        if (msg.type === 'ping') {
-          ws.send(JSON.stringify({ type: 'pong' }))
-          return
-        }
-        if (msg.type === 'message' && msg.content?.trim()) {
-          if (!processingResponse) {
-            currentTranscript = msg.content.trim()
-            processingResponse = true
-            ws.send(JSON.stringify({ type: 'status', message: 'thinking' }))
-            generateResponse(currentTranscript)
-              .then(() => { processingResponse = false })
-              .catch(err => {
-                console.error(`[anthropic] ${JSON.stringify({
-                  component: 'generate-response', persona: personaKey,
-                  failure: FAILURE.ANTHROPIC, fatal: false,
-                })}`)
-                processingResponse = false
-              })
-          }
-          return
-        }
-      } catch (err) {
-        // Do NOT log `err` NOR any property of it — V8's JSON.parse SyntaxError
-        // echoes the first ~10 characters of the input ("Unexpected token 'I',
-        // \"I never to\"..."), which for this branch is member-sent content.
+        // Do NOT log the parse error NOR any property of it — V8's JSON.parse
+        // SyntaxError echoes the first ~10 characters of the input ("Unexpected
+        // token 'I', \"I never to\"..."), which here is member-sent content.
         console.error(`[parse] ${JSON.stringify({
           component: 'ws-message', persona: personaKey,
           failure: 'malformed_json_message', fatal: false,
         })}`)
+        return
       }
+      if (msg?.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong' }))
+        return
+      }
+      // The client sends {"type":"start"} just before its first audio chunk.
+      // Open the Deepgram stream now (as the old fall-through did) so it is
+      // ready when audio arrives, but forward none of this frame's bytes.
+      if (msg?.type === 'start') {
+        if (!deepgramConnection) deepgramConnection = initDeepgram()
+        return
+      }
+      if (msg?.type === 'message' && typeof msg.content === 'string' && msg.content.trim()) {
+        if (!processingResponse) {
+          currentTranscript = msg.content.trim()
+          processingResponse = true
+          ws.send(JSON.stringify({ type: 'status', message: 'thinking' }))
+          generateResponse(currentTranscript)
+            .then(() => { processingResponse = false })
+            .catch(err => {
+              console.error(`[anthropic] ${JSON.stringify({
+                component: 'generate-response', persona: personaKey,
+                failure: FAILURE.ANTHROPIC, fatal: false,
+              })}`)
+              processingResponse = false
+            })
+        }
+      }
+      // Any other text frame (including start/stop) is not audio: drop it.
+      return
     }
 
     // Binary audio — forward to Deepgram
