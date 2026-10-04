@@ -276,15 +276,24 @@ function takeCompleteSentences(buffer, streamEnded = false) {
  * the evaluator and the vendor share ONE definition rather than two copies that
  * can drift. Callers derive the spoken form, evaluate THAT, and submit THAT.
  *
- * IDEMPOTENT: normalizeForSpeech(normalizeForSpeech(x)) === normalizeForSpeech(x),
- * asserted in the acceptance tests. A defensive second call at the vendor
- * boundary therefore cannot change the bytes the policy approved.
+ * IDEMPOTENT by construction: one pass is not always a fixed point (trim or
+ * strikethrough removal can expose a heading marker after the heading rule has
+ * run), so the pass is repeated until it stops changing. Every rule that
+ * changes the string makes it strictly shorter, so the loop terminates.
+ * A defensive second call at the vendor boundary therefore cannot change the
+ * bytes the policy approved.
  *
  * This is a SPOKEN representation only. What the member sees on screen keeps
  * its markdown; the two representations are allowed to differ.
  */
 function normalizeForSpeech(text) {
-  return String(text === null || text === undefined ? '' : text)
+  let out = normalizeOnce(String(text === null || text === undefined ? '' : text))
+  for (let next = normalizeOnce(out); next !== out; next = normalizeOnce(out)) out = next
+  return out
+}
+
+function normalizeOnce(text) {
+  return text
     .replace(/\*\*\*([^*]+)\*\*\*/g, '$1')  // ***bold italic***
     .replace(/\*\*([^*]+)\*\*/g, '$1')      // **bold**
     .replace(/\*([^*]+)\*/g, '$1')          // *italic*

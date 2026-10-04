@@ -435,6 +435,14 @@ async function main() {
       'normalizeForSpeech is IDEMPOTENT, so a defensive second call cannot change approved bytes')
     check(rp.normalizeForSpeech(null) === '' && rp.normalizeForSpeech(undefined) === '',
       'normalizeForSpeech is total on null/undefined')
+    // Independent audit F1 (Module 4 Cycle 1): these shapes only expose their
+    // heading marker after trim / strikethrough removal, so a single pass was
+    // not a fixed point and the vendor-side second call changed approved bytes.
+    for (const raw of ['  # A gentle thought.', '~~# A gentle thought.~~']) {
+      const once = rp.normalizeForSpeech(raw)
+      check(rp.normalizeForSpeech(once) === once,
+        `normalizeForSpeech is idempotent on ${JSON.stringify(raw)}`, `${JSON.stringify(once)} -> ${JSON.stringify(rp.normalizeForSpeech(once))}`)
+    }
   }
 
   // ── R. RUNTIME LEVEL ───────────────────────────────────────────────
