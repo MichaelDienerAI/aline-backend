@@ -19,6 +19,57 @@ console.error = (...args) => {
   return passThroughConsoleError(...args)
 }
 
+// ── RELEASE OBSERVER — JUDGMENT WITHOUT AUTHORITY ─────────────────
+// Replays a COPY of a reply that has already been delivered through the pure
+// release-policy evaluator and reports what the gate WOULD have decided on the
+// first stream. It returns a value and nothing else: no send, no history write,
+// no provider call, no regeneration, no fallback. The reply is never altered.
+//
+// Never throws. release-policy is required inside the try so that even a load
+// failure becomes a bounded record instead of reaching generateResponse's catch,
+// which would send the member an error frame.
+//
+// Output is enum-only. The verdict's `matched` field is a verbatim fragment of
+// model output and is deliberately never read.
+const OBSERVER_FAILED = Object.freeze({ evaluated: false, wouldBlock: null, invariant: null, kind: null, channel: null, gateError: true })
+function observeRelease(fullText) {
+  try {
+    const rp = require('./services/release-policy')
+    const oneOf = (v, allowed) => (allowed.includes(v) ? v : 'OTHER')
+    const { sentences } = rp.takeCompleteSentences(String(fullText), true)
+    let display = ''
+    let spoken = ''
+    for (const sentence of sentences) {
+      display += sentence
+      let verdict = rp.evaluateReleaseSafe(display)
+      let channel = 'display'
+      if (verdict.approved) {
+        const s = rp.normalizeForSpeech(sentence)
+        if (s) {
+          spoken = spoken ? `${spoken} ${s}` : s
+          verdict = rp.evaluateReleaseSafe(spoken)
+          channel = 'spoken'
+        }
+      }
+      if (!verdict.approved) {
+        const b = verdict.blocking[0] || {}
+        return {
+          evaluated: true,
+          wouldBlock: true,
+          invariant: oneOf(b.invariant, ['NEVER_ABANDONS', 'GATE_FAILURE']),
+          kind: oneOf(b.kind, ['EXIT', 'REFERRAL']),
+          channel,
+          gateError: verdict.gateError === true,
+        }
+      }
+    }
+    return { evaluated: true, wouldBlock: false, invariant: null, kind: null, channel: null, gateError: false }
+  } catch {
+    // Nothing from the error is read or logged.
+    return OBSERVER_FAILED
+  }
+}
+
 // ── CONFIGURATION ─────────────────────────────────────────────────
 const VOICE_IDS = {
   aline: 'knPeAXsHZ6FVdoLHMtRJ',
@@ -1866,6 +1917,12 @@ wss.on('connection', (ws, req) => {
       ws.send(JSON.stringify({ type: 'response_complete' }))
       ws.send(JSON.stringify({ type: 'status', message: 'listening' }))
       console.log(`[turn] ${JSON.stringify({ persona: logPersona, event: 'response_complete', chars: fullResponse.length })}`)
+
+      // Post-turn only: the reply is already delivered, spoken and in history.
+      // A logging failure here is swallowed, never surfaced to the member.
+      try {
+        console.log(`[release-observe] ${JSON.stringify(observeRelease(fullResponse))}`)
+      } catch {}
 
     } catch (err) {
       console.error(`[anthropic] ${JSON.stringify({ component: 'generate-response', persona: logPersona, failure: 'anthropic_generation_failure', status: Number.isInteger(err && err.status) ? err.status : null })}`)
