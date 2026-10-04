@@ -3,6 +3,22 @@ const http = require('http')
 const { createClient } = require('@deepgram/sdk')
 const Anthropic = require('@anthropic-ai/sdk')
 
+// ── LOG PRIVACY: Anthropic SDK malformed-stream diagnostics ──────
+// @anthropic-ai/sdk 0.39.x (streaming.js) has no logger option and, when an
+// SSE chunk fails to parse, prints the raw chunk with console.error before
+// throwing. Those chunks carry assistant text. The throw itself still reaches
+// generateResponse's bounded [anthropic] log. Only these two exact SDK message
+// strings are replaced; every other console.error call passes through as-is.
+const SDK_RAW_CHUNK_MESSAGES = new Set(['Could not parse message into JSON:', 'From chunk:'])
+const passThroughConsoleError = console.error.bind(console)
+console.error = (...args) => {
+  if (typeof args[0] === 'string' && SDK_RAW_CHUNK_MESSAGES.has(args[0])) {
+    if (args[0] === 'From chunk:') return
+    return passThroughConsoleError(`[anthropic] ${JSON.stringify({ component: 'sdk-stream', failure: 'malformed_stream_chunk' })}`)
+  }
+  return passThroughConsoleError(...args)
+}
+
 // ── CONFIGURATION ─────────────────────────────────────────────────
 const VOICE_IDS = {
   aline: 'knPeAXsHZ6FVdoLHMtRJ',
@@ -1707,7 +1723,7 @@ const server = http.createServer(async (req, res) => {
 
       if (!simliRes.ok) {
         const text = await simliRes.text()
-        console.error('Simli API error:', text)
+        console.error(`[simli] ${JSON.stringify({ component: 'simli-session', failure: 'simli_http_failure', status: simliRes.status })}`)
         res.writeHead(500, { 'Content-Type': 'application/json' })
         return res.end(JSON.stringify({ error: 'Simli session failed' }))
       }
@@ -1716,7 +1732,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       return res.end(JSON.stringify(data))
     } catch (err) {
-      console.error('Simli session error:', err)
+      console.error(`[simli] ${JSON.stringify({ component: 'simli-session', failure: 'simli_transport_failure' })}`)
       res.writeHead(500, { 'Content-Type': 'application/json' })
       return res.end(JSON.stringify({ error: 'Simli session failed' }))
     }
@@ -1743,8 +1759,10 @@ wss.on('connection', (ws, req) => {
   const isDemo = url.searchParams.get('demo') === '1'
   const systemPrompt = SYSTEM_PROMPTS[personaId] || SYSTEM_PROMPTS.aline
   const voiceId = VOICE_IDS[personaId] || VOICE_IDS.aline
+  // Log-safe persona: the raw ?persona= value is client-controlled and unbounded.
+  const logPersona = Object.prototype.hasOwnProperty.call(SYSTEM_PROMPTS, personaId) ? personaId : 'unrecognized'
 
-  console.log(`[${new Date().toISOString()}] Connection — persona: ${personaId}, voice: ${voiceId}, demo: ${isDemo}`)
+  console.log(`[${new Date().toISOString()}] Connection — persona: ${logPersona}, voice: ${voiceId}, demo: ${isDemo}`)
 
   const deepgram = createClient(process.env.DEEPGRAM_API_KEY)
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -1766,7 +1784,7 @@ wss.on('connection', (ws, req) => {
     })
 
     connection.on('open', () => {
-      console.log(`Deepgram connected — ${personaId}`)
+      console.log(`Deepgram connected — ${logPersona}`)
       ws.send(JSON.stringify({ type: 'status', message: 'listening' }))
     })
 
@@ -1790,7 +1808,7 @@ wss.on('connection', (ws, req) => {
       processingResponse = false
     })
 
-    connection.on('error', (err) => console.error('Deepgram error:', err))
+    connection.on('error', () => console.error(`[deepgram] ${JSON.stringify({ component: 'stt', persona: logPersona, failure: 'deepgram_error' })}`))
     connection.on('close', () => console.log('Deepgram closed'))
 
     return connection
@@ -1798,7 +1816,7 @@ wss.on('connection', (ws, req) => {
 
   // ── ANTHROPIC ──
   async function generateResponse(userText) {
-    console.log(`[${personaId}] "${userText}"`)
+    console.log(`[turn] ${JSON.stringify({ persona: logPersona, event: 'user_turn', chars: userText.length })}`)
     conversationHistory.push({ role: 'user', content: userText })
 
     let fullResponse = ''
@@ -1847,10 +1865,10 @@ wss.on('connection', (ws, req) => {
       conversationHistory.push({ role: 'assistant', content: fullResponse })
       ws.send(JSON.stringify({ type: 'response_complete' }))
       ws.send(JSON.stringify({ type: 'status', message: 'listening' }))
-      console.log(`[${personaId}] Complete: "${fullResponse}"`)
+      console.log(`[turn] ${JSON.stringify({ persona: logPersona, event: 'response_complete', chars: fullResponse.length })}`)
 
     } catch (err) {
-      console.error(`[${personaId}] Anthropic error:`, err)
+      console.error(`[anthropic] ${JSON.stringify({ component: 'generate-response', persona: logPersona, failure: 'anthropic_generation_failure', status: Number.isInteger(err && err.status) ? err.status : null })}`)
       ws.send(JSON.stringify({ type: 'error', message: 'Response generation failed' }))
     }
   }
@@ -1899,7 +1917,7 @@ wss.on('connection', (ws, req) => {
       )
 
       if (!response.ok) {
-        console.error(`ElevenLabs error [${voiceId}]:`, response.statusText)
+        console.error(`[tts] ${JSON.stringify({ component: 'elevenlabs', persona: logPersona, failure: 'elevenlabs_http_failure', status: response.status })}`)
         return
       }
 
@@ -1916,7 +1934,7 @@ wss.on('connection', (ws, req) => {
         }
       }
     } catch (err) {
-      console.error('ElevenLabs error:', err)
+      console.error(`[tts] ${JSON.stringify({ component: 'elevenlabs', persona: logPersona, failure: 'elevenlabs_transport_failure' })}`)
     }
   }
 
@@ -1940,7 +1958,7 @@ wss.on('connection', (ws, req) => {
               generateResponse(currentTranscript)
                 .then(() => { processingResponse = false })
                 .catch(err => {
-                  console.error(`[${personaId}] Error:`, err)
+                  console.error(`[anthropic] ${JSON.stringify({ component: 'generate-response', persona: logPersona, failure: 'generate_response_rejected' })}`)
                   processingResponse = false
                 })
             }
@@ -1967,14 +1985,14 @@ wss.on('connection', (ws, req) => {
             generateResponse(currentTranscript)
               .then(() => { processingResponse = false })
               .catch(err => {
-                console.error(`[${personaId}] Error:`, err)
+                console.error(`[anthropic] ${JSON.stringify({ component: 'generate-response', persona: logPersona, failure: 'generate_response_rejected' })}`)
                 processingResponse = false
               })
           }
           return
         }
       } catch (err) {
-        console.error(`[${personaId}] Parse error:`, err)
+        console.error(`[parse] ${JSON.stringify({ component: 'ws-message', persona: logPersona, failure: 'malformed_json_message' })}`)
       }
     }
 
@@ -1984,11 +2002,11 @@ wss.on('connection', (ws, req) => {
   })
 
   ws.on('close', () => {
-    console.log(`[${personaId}] Closed`)
+    console.log(`[${logPersona}] Closed`)
     deepgramConnection?.finish()
   })
 
-  ws.on('error', (err) => console.error(`[${personaId}] WS error:`, err))
+  ws.on('error', (err) => console.error(`[${logPersona}] WS error:`, err))
 })
 
 // ── START ─────────────────────────────────────────────────────────
