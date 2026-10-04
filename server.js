@@ -2258,12 +2258,14 @@ wss.on('connection', (ws, req) => {
   async function sendToElevenLabs(text, voiceId) {
     if (!text.trim()) return false
 
-    // Defensive idempotent guard, NOT a transform of approved bytes.
+    // Defensive guard. It can still change approved bytes (see below).
     //
     // The canonical spoken form is derived and EVALUATED upstream, in
     // authorizeSegment, and the approved string is what callers pass here.
-    // normalizeForSpeech is idempotent, so re-applying it cannot change those
-    // bytes. It stays as a floor: a future caller that forgets to normalize
+    // normalizeForSpeech is NOT idempotent for every input: an independent
+    // audit found that indented and strikethrough headings change on this
+    // second pass, so the text sent to TTS can differ from the approved text.
+    // It stays as a floor: a future caller that forgets to normalize
     // still cannot hand the vendor raw markdown. It must never become the
     // place where normalization FIRST happens, because anything transformed
     // here has not been judged by the release policy.
