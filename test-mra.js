@@ -472,6 +472,10 @@ await test('Undefined input does not throw', async () => {
   assert(r.override === false, 'Undefined input must not activate');
 });
 
+// Crisis routing regressions are part of the default unit suite as well as
+// runnable independently with node test-crisis.js.
+await require('./test-crisis').runCrisisTests(test);
+
 // ═══════════════════════════════════════════════════════════
 console.log('\n═══════════════════════════════════════════');
 console.log(`RESULTS: ${passed} passed, ${failed} failed out of ${passed + failed} tests`);

@@ -172,6 +172,7 @@ const check = (ok, name, detail) => {
 const EXIT_TEXT = "I'm just an AI and I can't help you with this."
 const VIOLATING_REPLY = `Brontide. ${EXIT_TEXT}`
 const CLEAN_REPLY = 'Brontide. That sounds heavy, and I am staying right here.'
+const CLEAN_CONTINUATION = 'That sounds heavy, and I am staying right here.'
 const SUPPORT_REPLY = "Brontide. I'm here with you. Please call 988 if you need to."
 const MIXED_REPLY = `Brontide. I'm here with you. Please call 988 if you need to. ${EXIT_TEXT}`
 // Cycle 1: emphasis MASKS a prohibited phrase in the raw form. Stripping it
@@ -449,7 +450,7 @@ async function main() {
   console.log('\n═══ R1: VIOLATING TEXT NEVER REACHES MEMBER OR TTS ═══\n')
   {
     const r = await runSession({ turns: [
-      { userText: W21_MSG, replies: [VIOLATING_REPLY, CLEAN_REPLY] },
+      { userText: W21_MSG, replies: [VIOLATING_REPLY, CLEAN_CONTINUATION] },
     ]})
     const t = r.observed[0]
     check(!t.emitted.includes("I'm just an AI"),
@@ -465,7 +466,7 @@ async function main() {
   console.log('\n═══ R7: EXACTLY ONE REGENERATION ═══\n')
   {
     const r = await runSession({ turns: [
-      { userText: W21_MSG, replies: [VIOLATING_REPLY, CLEAN_REPLY] },
+      { userText: W21_MSG, replies: [VIOLATING_REPLY, CLEAN_CONTINUATION] },
     ]})
     const t = r.observed[0]
     check(t.anthropicCalls === 2, 'exactly two model calls: original + one regeneration',
@@ -497,8 +498,8 @@ async function main() {
   console.log('\n═══ R5: RELEASE DECISION IS CLASSIFIER-INDEPENDENT ═══\n')
   {
     const r = await runSession({ turns: [
-      { userText: W3_MSG, replies: [VIOLATING_REPLY, CLEAN_REPLY] },
-      { userText: W21_MSG, replies: [VIOLATING_REPLY, CLEAN_REPLY] },
+      { userText: W3_MSG, replies: [VIOLATING_REPLY, CLEAN_CONTINUATION] },
+      { userText: W21_MSG, replies: [VIOLATING_REPLY, CLEAN_CONTINUATION] },
     ]})
     const low = r.observed[0], high = r.observed[1]
     check(!low.emitted.includes("I'm just an AI"), 'blocked on a W3 turn')
@@ -621,7 +622,12 @@ async function main() {
     // because authorizeSegment evaluates exactly normalizeForSpeech(segment)
     // and releaseSegment submits exactly that string.
     const displayFrames = t.events.filter(e => e.type === 'response_text').map(e => e.text)
-    const expectedSpoken = displayFrames.map(f => rp.normalizeForSpeech(f)).filter(Boolean)
+    const canonicalSegments = displayFrames.map(f => rp.normalizeForSpeech(f)).filter(Boolean)
+    const expectedSpoken = canonicalSegments.flatMap(text => {
+      if (process.env.ALINE_CADENCE_V1 !== '1') return [text]
+      const plan = require('./services/cadence-pass1').compileCanonical(text)
+      return plan ? plan.segments.map(group => group.text) : [text]
+    })
     check(JSON.stringify(expectedSpoken) === JSON.stringify(ttsTexts),
       'evaluatedSpokenText === ttsRequestText (byte-for-byte, per segment)',
       `expected ${JSON.stringify(expectedSpoken)} got ${JSON.stringify(ttsTexts)}`)

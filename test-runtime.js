@@ -391,6 +391,28 @@ const historyFrom = (requests, turnIndex) => {
 }
 
 async function main() {
+  console.log('\n═══ RUNTIME: WEIGHT-INDEPENDENT CRISIS REGRESSION ═══\n')
+  {
+    const cases = [
+      ['If she leaves me, I will kill myself tonight.', true],
+      ['I want a sandwich.', false],
+      ['He said "I will kill myself tonight."', false],
+      ['I am not going to kill myself.', false],
+    ]
+    const r = await runSession({ turns: [
+      ...cases.map(([userText]) => ({ userText, reply: 'I hear you.' })),
+      { userText: 'Thanks.', reply: 'I hear you.' },
+    ] })
+    cases.forEach(([userText, expected], i) => {
+      const t = r.observed[i]
+      check(t.emitted === (expected ? SUFFIX + ' ' : '') + 'I hear you.', `crisis regression ${i}: exact received text`)
+      check(t.tts.filter(x => x.text && x.text.includes('988')).length === 0, `crisis regression ${i}: suffix TTS count`)
+      check(t.suffixAudioBytes === 0, `crisis regression ${i}: suffix audio`)
+      check(historyFrom(r.requests, i) === t.emitted, `crisis regression ${i}: next request history`)
+      check(r.crisis[i] && r.crisis[i].crisisActivated === expected, `crisis regression ${i}: activation`)
+    })
+    check(r.crisis[0] && r.crisis[0].weight === 3, 'known regression remains W3 in wired runtime')
+  }
   console.log('\n═══ RUNTIME: EXPLICIT CRISIS ═══\n')
   {
     const r = await runSession({ turns: [
@@ -594,10 +616,9 @@ async function main() {
     // Allowlist guard on production source: inside the [anthropic] failure logs
     // the ONLY permitted reference to `err` is safeStatus(err && err.status).
     const blocks = [...src.matchAll(/console\.error\(`\[anthropic\] \$\{JSON\.stringify\(\{([\s\S]*?)\}\)\}`\)/g)].map(m => m[1])
-    // Two sites: generateResponse's catch and the single ws text-frame handler.
-    // (A third, duplicate handler for string frames was unreachable under ws v8
-    // and was removed when frame routing moved to the isBinary flag.)
-    check(blocks.length === 2, 'found both bounded anthropic log sites', `found ${blocks.length}`)
+    // Three bounded sites: ordinary generation, explicit retry failure, and
+    // the WebSocket handler. The new retry site has no provider-error fields.
+    check(blocks.length === 3, 'found all three bounded anthropic log sites', `found ${blocks.length}`)
     const errRefs = blocks.flatMap(b => [...b.matchAll(/err[^,\n]*/g)].map(x => x[0].trim()))
     check(errRefs.length === 1 && errRefs[0] === 'err && err.status)',
       'anthropic logs reference `err` ONLY inside safeStatus(err && err.status)', JSON.stringify(errRefs))

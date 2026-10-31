@@ -1,13 +1,13 @@
 /**
  * Crisis Override Module
  * 
- * Handles W21 crisis detection and safety information injection.
- * Runs AFTER invariant-enforcer.js and BEFORE TTS.
+ * Handles explicit self-harm intent independently of emotional weight,
+ * plus the existing W21 distress route. Appends after ordinary release.
  * 
  * CRITICAL: This module injects 988 AFTER invariant-gate runs,
  * so the crisis hotline reference is never stripped by abandonment detection.
  * 
- * Target: < 1ms execution. No AI calls. Simple weight check.
+ * No AI calls. Bounded lexical routing, not a comprehensive risk assessment.
  * 
  * MRA Architecture: Stage 3 — crisis-override.js
  * Classification: INTERNAL ENGINEERING — PERSONA IO
@@ -18,6 +18,27 @@
 // ---------------------------------------------------------------------------
 
 const CRISIS_WEIGHT = 21;
+
+// Only unquoted, current assertions participate in lexical routing. These
+// bounded English exclusions prevent widening the old keyword route when
+// bypassing weight. They are not a general quotation/temporal parser.
+function currentAssertionText(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/[’]/g, "'")
+    .replace(/"[^"\n]*"|“[^”\n]*”|(?:^|\s)'[^'\n]+'(?=\s|[.!?,;:]|$)/g, ' ')
+    .split(/(?<=[.!?;])\s+|\n+|\bbut\s+(?=i\b)/i)
+    .filter(sentence => !/\b(hypothetically|fictional|in (?:a|the) (?:story|novel|movie)|for example|what if|last year|years? ago|used to|back then)\b/i.test(sentence))
+    // Remove only the negated intent span, so a later affirmative clause can
+    // still trigger. Do not strip "I don't want to be here" (legacy distress).
+    .map(sentence => sentence.replace(/\bi(?: am not|[' ]m not| do not| don't| will not| won't| would never)\s+(?:(?:going|planning|about) to\s+|want to\s+)?(?:kill myself|hurt myself|harm myself|end my life|take my own life|commit suicide|die)\b/gi, ' '))
+    .join(' ').trim();
+}
+
+function hasExplicitSelfHarmIntent(text) {
+  // A conditional antecedent ("If she leaves me, ...") is not itself a
+  // hypothetical discussion: an affirmative first-person consequent counts.
+  return /(?:^|[,;.!?]\s*|\b(?:then|but|and)\s+|^if\b(?![^.!?;]*\b(?:say|says|said|quote|example)\b)[^.!?;]*?\s+)i(?:\s+(?:will|intend to|plan to|want to)|'ll|(?:'m| am)\s+(?:going|planning|about) to)\s+(?:(?:really|seriously|actually)\s+)?(?:kill myself|hurt myself|harm myself|end my life|take my own life|commit suicide)\b/i.test(text);
+}
 
 // External attribution exclusion — these contexts indicate political/social frustration,
 // not personal crisis. Crisis suffix must not fire when the distress is about external actors.
@@ -74,8 +95,9 @@ async function logCrisisArtifact(sessionId, metadata = {}) {
 /**
  * crisisOverride - Main crisis handler function
  * 
- * Runs AFTER invariant-enforcer. When classification weight is W21,
- * appends minimal safety information in the quietest possible register.
+ * Explicit first-person intent bypasses weight and external-topic exclusions.
+ * Otherwise the legacy W21 distress route applies. The suffix is returned
+ * separately for the runtime to append; it does not replace released text.
  * 
  * @param {Object} input - The input object
  * @param {Object} input.classification - FEC classification result
@@ -104,11 +126,14 @@ async function crisisOverride(input) {
   } = input;
   
   const weight = classification?.weight ?? 1;
+  const userText = input.userMessage || input.transcribedText || input.text || '';
+  const assertionText = currentAssertionText(userText);
+  const explicitIntent = hasExplicitSelfHarmIntent(assertionText);
   
   console.log('[Crisis] Checking weight:', weight, '(threshold:', CRISIS_WEIGHT + ')');
   
-  // Only activate at W21
-  if (weight < CRISIS_WEIGHT) {
+  // Emotional weight must not veto an explicit first-person intent statement.
+  if (!explicitIntent && weight < CRISIS_WEIGHT) {
     const elapsed = Date.now() - startTime;
     console.log('[Crisis] Below threshold, pass-through in', elapsed, 'ms');
     return {
@@ -117,8 +142,7 @@ async function crisisOverride(input) {
     };
   }
       // External attribution exclusion — skip 988 for political/social frustration
-      const userText = input.userMessage || input.transcribedText || input.text || '';
-      if (isExternalAttribution(userText)) {
+      if (!explicitIntent && isExternalAttribution(userText)) {
               console.log('[Crisis] External attribution detected, skipping crisis suffix');
               return {
                         override: false,
@@ -128,11 +152,12 @@ async function crisisOverride(input) {
   
   // Require explicit crisis language - W21 alone is not enough
   const categories = classification?.dimensions?.[0]?.categories || [];
-  const hasCrisisPhrase = categories.includes('crisis_phrase');
+  // A category derived from discarded quotation/context must not restore it.
+  const hasCrisisPhrase = assertionText === userText && categories.includes('crisis_phrase');
   const CRISIS_KEYWORDS = ["don't want to be here", "dont want to be here", "can't go on", "cant go on", "no reason to live", "not worth living", "end it", "kill myself", "suicide", "want to die"];
-  const hasCrisisKeyword = CRISIS_KEYWORDS.some(kw => userText.toLowerCase().includes(kw));
+  const hasCrisisKeyword = CRISIS_KEYWORDS.some(kw => assertionText.toLowerCase().includes(kw));
 
-  if (!hasCrisisPhrase && !hasCrisisKeyword) {
+  if (!explicitIntent && !hasCrisisPhrase && !hasCrisisKeyword) {
     console.log('[Crisis] W21 but no crisis phrase detected - skipping suffix');
     return {
       override: false,
@@ -140,8 +165,7 @@ async function crisisOverride(input) {
     };
   }
 
-  // W21 CRISIS ACTIVATE
-  console.log('[Crisis] W21 CRISIS ACTIVATED');
+  console.log('[Crisis] CRISIS ACTIVATED:', explicitIntent ? 'explicit intent' : 'W21 distress');
   
   // Append safety suffix to response
   // The suffix is designed to be non-abandoning (presence-first: "I'm here with you")
@@ -187,6 +211,8 @@ async function crisisOverride(input) {
 // ---------------------------------------------------------------------------
 
 module.exports = {
+  // Raw-text predicate shares exactly the existing quotation/negation guards.
+  detectExplicitCrisisIntent: text => hasExplicitSelfHarmIntent(currentAssertionText(text)),
   crisisOverride,
   CRISIS_WEIGHT,
   CRISIS_SUFFIX,

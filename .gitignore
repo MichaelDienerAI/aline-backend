@@ -20,3 +20,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Local-only private rehearsal evidence (never stage/upload)
+/private-rehearsals/
