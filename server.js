@@ -1829,7 +1829,23 @@ wss.on('connection', (ws, req) => {
   let memberSession = null
   if (memberRuntime) {
     try {
-      memberSession = memberRuntime.connect(req.headers.authorization, personaId, () => { conversationHistory = [] })
+      let authorization = req.headers.authorization
+
+      // Monday demo bridge: the browser may present a revocable bridge token,
+      // but the actual member credential remains server-side.
+      const presentedBridge = url.searchParams.get('bridge')
+      const expectedBridge = process.env.PERSONA_DEMO_BRIDGE_TOKEN
+      const demoCredential = process.env.PERSONA_DEMO_MEMBER_CREDENTIAL
+
+      if (!authorization && presentedBridge && expectedBridge && demoCredential) {
+        const presented = Buffer.from(presentedBridge)
+        const expected = Buffer.from(expectedBridge)
+        if (presented.length === expected.length && crypto.timingSafeEqual(presented, expected)) {
+          authorization = `Bearer ${demoCredential}`
+        }
+      }
+
+      memberSession = memberRuntime.connect(authorization, personaId, () => { conversationHistory = [] })
     } catch {
       ws.close(1008, 'Member authentication or confidante rejected')
       return
