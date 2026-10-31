@@ -316,12 +316,24 @@ async function runSession({ persona = 'aline', turns, ttsMode = null, ttsMatch =
   const logs = SX.logs
   const cap = (b) => String(b).split('\n').filter(Boolean).forEach(l => logs.push(l))
   srv.stdout.on('data', cap); srv.stderr.on('data', cap)
-  SX.readinessWaitMs = 900
-  await new Promise(r => setTimeout(r, 900))
-  // Observation only. Deliberately does NOT wait for readiness: adding a poll
-  // here would alter the behaviour under investigation.
+  const readinessStart = Date.now()
+  const readinessDeadline = readinessStart + 5000
+  let ready = false
+  while (!ready && Date.now() < readinessDeadline) {
+    if (SX.exited) break
+    ready = await new Promise(resolve => {
+      const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: 150 }, res => {
+        res.resume()
+        resolve(res.statusCode === 200)
+      })
+      req.on('error', () => resolve(false))
+      req.on('timeout', () => { req.destroy(); resolve(false) })
+    })
+    if (!ready) await new Promise(r => setTimeout(r, 50))
+  }
+  SX.readinessWaitMs = Date.now() - readinessStart
   SX.aliveAtConnect = SX.exited ? `no — child already exited (code=${SX.exitCode} signal=${SX.exitSignal})` : 'yes — child process still running'
-  DIAG.phase = `opening websocket to port ${port} (session #${SX.n}, after ${SX.readinessWaitMs}ms fixed startup wait)`
+  DIAG.phase = `opening websocket to port ${port} (session #${SX.n}, after ${SX.readinessWaitMs}ms readiness wait)`
 
   const observed = []
   const ws = new WebSocket(`ws://localhost:${port}/?persona=${persona}&demo=1`)

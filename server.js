@@ -2601,7 +2601,7 @@ wss.on('connection', (ws, req) => {
 
 // ── START ─────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3002
-server.listen(PORT, memberRuntime ? '127.0.0.1' : undefined, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`Persona iO Backend v3.3.0 on port ${PORT}`)
   console.log(`Model: ${MODEL_NAME}`)
   console.log(`Personas: ${Object.keys(SYSTEM_PROMPTS).join(', ')}`)
