@@ -1747,10 +1747,27 @@ You are the chambers. The structure that makes deliberation possible because it 
 }
 
 // ── HTTP SERVER ───────────────────────────────────────────────────
+// V4 avatar session: member-authenticated Simli session minting. v4 only;
+// legacy mode never exposes it. SIMLI_API_KEY stays server-side (see
+// services/avatar-session). Kept below the HTTP SERVER marker because
+// scripts/rehearsal-core.cjs evaluates the source above it in isolation.
+const avatarSession = memberRuntime
+  ? require('./services/avatar-session').createAvatarSession({
+      memberRuntime,
+      faceIds: AVATAR_IDS,
+      getApiKey: () => process.env.SIMLI_API_KEY,
+      fetch: (...args) => fetch(...args),
+    })
+  : null
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+  // Before the global OPTIONS handler: this endpoint owns its preflight and
+  // replaces the wildcard CORS above with its own origin allowlist.
+  if (avatarSession && avatarSession.matches(req)) return avatarSession.handle(req, res)
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204)
@@ -1812,7 +1829,20 @@ const wss = new WebSocket.Server({ server })
 
 // ── CONNECTION HANDLER ────────────────────────────────────────────
 wss.on('connection', (ws, req) => {
-  const url = new URL(req.url, 'http://localhost')
+  // Attach before any early return. A rejected socket stays open until the
+  // close handshake ends; an invalid frame in that window emits 'error', and
+  // with no listener that terminates the process. Accepted sessions also log
+  // through the handler at the end of this function.
+  ws.on('error', () => {})
+  // An unparseable request target (e.g. "//[") throws here; uncaught, it
+  // terminates the process and every live session with it. Fail closed.
+  let url
+  try {
+    url = new URL(req.url, 'http://localhost')
+  } catch {
+    ws.close(1008, 'Invalid request URL')
+    return
+  }
   const personaId = url.searchParams.get('persona') || 'aline'
   // Demo flag (v3.3.0). The public demo connects with ?demo=1 and runs
   // formation-only (no web search), because under tool results the model

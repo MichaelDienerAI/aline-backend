@@ -50,6 +50,13 @@ function createMemberRuntime(filename) {
       }
     };
   }
-  return {connect};
+  // Stateless member check for HTTP capability endpoints. Header-only, so a
+  // caller is authenticated before any request body is read.
+  // Registers no session: busy/pendingSpeech accounting stays WebSocket-only.
+  function authenticate(authorization) {
+    if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) throw Error('unauthenticated');
+    return store.authenticate(authorization.slice(7));
+  }
+  return {connect, authenticate};
 }
 module.exports = {createMemberRuntime};
