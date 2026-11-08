@@ -12,6 +12,12 @@
 
 const PROVIDER = 'supabase';
 const SUBPROTOCOL = 'persona.v1';
+// A Supabase-admitted WebSocket is a lease on the proof that admitted it and
+// closes with this code at the proof's exp. Renewal is a new connection with a
+// fresh token; the member is unchanged. Application range, distinct from 1000
+// (normal), 1008 (rejected), 1011/1013 (server).
+const AUTH_EXPIRED_CLOSE_CODE = 4401;
+const AUTH_EXPIRED_REASON = 'authorization_expired';
 const MAX_TOKEN_BYTES = 4096;
 const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -22,14 +28,16 @@ const coded = code => Object.assign(Error(code), { code });
 // kinds cannot be confused.
 const isSupabaseToken = token => typeof token === 'string' && token.length <= MAX_TOKEN_BYTES && JWT_SHAPE.test(token);
 
-// Rejects early without a network call. Not an acceptance check: only
-// Supabase can accept a token.
-function expiredOrUnreadable(token, now) {
+// The token's exp claim in epoch ms, or null when absent or unreadable. Read
+// once, before Supabase is asked: a token Supabase accepts carries a signed
+// exp, so after verification this is the proof's verified lifetime. Before
+// verification it only rejects early without a network call.
+function tokenExpiry(token) {
   try {
     const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
-    return typeof payload.exp !== 'number' || payload.exp * 1000 <= now();
+    return typeof payload.exp === 'number' && Number.isFinite(payload.exp) ? payload.exp * 1000 : null;
   } catch {
-    return true;
+    return null;
   }
 }
 
@@ -78,7 +86,8 @@ function createMemberIdentity({ runtime, verifier, now = Date.now, log = console
   const logFailure = (failure, status) => log(`[identity] ${JSON.stringify({ component: 'member-identity', failure, status })}`);
 
   async function resolveToken(token) {
-    if (!isSupabaseToken(token) || expiredOrUnreadable(token, now)) throw coded('unauthenticated');
+    const expiresAt = isSupabaseToken(token) ? tokenExpiry(token) : null;
+    if (expiresAt === null || expiresAt <= now()) throw coded('unauthenticated');
     if (!verifier) { logFailure('identity_not_configured', 503); throw coded('identity_unavailable'); }
     let user;
     let active;
@@ -92,7 +101,7 @@ function createMemberIdentity({ runtime, verifier, now = Date.now, log = console
     }
     if (!active) throw coded('membership_required');
     try {
-      return runtime.externalMember(PROVIDER, user.id);
+      return { memberId: runtime.externalMember(PROVIDER, user.id), expiresAt };
     } catch {
       logFailure('member_store_failure', 500);
       throw coded('member_store_failure');
@@ -105,13 +114,13 @@ function createMemberIdentity({ runtime, verifier, now = Date.now, log = console
     async authenticate(authorization) {
       if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) throw coded('unauthenticated');
       const credential = authorization.slice(7);
-      if (isSupabaseToken(credential)) return resolveToken(credential);
+      if (isSupabaseToken(credential)) return (await resolveToken(credential)).memberId;
       return runtime.authenticate(authorization);
     },
     // WebSocket upgrade. Browsers cannot set headers on a WebSocket, so the
     // token is offered as the subprotocol after SUBPROTOCOL. Returns null when
     // no Supabase proof was offered (the existing credential and bridge paths
-    // then apply), otherwise {memberId} or {error}.
+    // then apply), otherwise {memberId, expiresAt} (epoch ms) or {error}.
     async verifyUpgrade(req) {
       const header = req.headers['sec-websocket-protocol'];
       if (typeof header !== 'string') return null;
@@ -120,7 +129,7 @@ function createMemberIdentity({ runtime, verifier, now = Date.now, log = console
       const tokens = offered.filter(p => p !== SUBPROTOCOL);
       try {
         if (tokens.length !== 1) throw coded('unauthenticated');
-        return { memberId: await resolveToken(tokens[0]) };
+        return await resolveToken(tokens[0]);
       } catch (err) {
         return { error: (err && err.code) || 'member_store_failure' };
       }
@@ -134,4 +143,7 @@ function selectProtocol(protocols) {
   return protocols.has(SUBPROTOCOL) ? SUBPROTOCOL : false;
 }
 
-module.exports = { createMemberIdentity, createSupabaseVerifier, selectProtocol, isSupabaseToken, PROVIDER, SUBPROTOCOL };
+module.exports = {
+  createMemberIdentity, createSupabaseVerifier, selectProtocol, isSupabaseToken,
+  PROVIDER, SUBPROTOCOL, AUTH_EXPIRED_CLOSE_CODE, AUTH_EXPIRED_REASON,
+};

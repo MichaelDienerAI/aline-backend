@@ -1888,18 +1888,52 @@ wss.on('connection', (ws, req) => {
     (cadenceEnabled ? cadencePass1.COMPOSITION_RULES : '')
   const voiceId = VOICE_IDS[personaId] || VOICE_IDS.aline
   let memberSession = null
+  // Authorization lease (Supabase sockets only): the grant ends at the proof's
+  // verified exp. Expiry ends the grant's work and closes the socket; the
+  // member and its memory are untouched. Legacy credential and bridge sockets
+  // have none.
+  let leaseDeadline = null
+  let leaseTimer = null
+  let leaseEnded = false
+  const leaseLapsed = () => leaseDeadline !== null && Date.now() >= leaseDeadline
+  const expireLease = () => {
+    clearTimeout(leaseTimer)
+    if (!leaseEnded) {
+      leaseEnded = true
+      // In-flight work stops through the same path as STOP and close: the
+      // model stream and TTS requests are aborted, audio input is dropped.
+      // Only ever called after the connection setup below has run.
+      acceptingAudio = false
+      speechLifecycle.cancel()
+      deepgramConnection?.finish()
+      deepgramConnection = null
+    }
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close(memberIdentityModule.AUTH_EXPIRED_CLOSE_CODE, memberIdentityModule.AUTH_EXPIRED_REASON)
+    }
+  }
   if (memberRuntime && req.personaIdentity) {
     // A Supabase proof was offered: it alone decides. No bridge or credential
     // fallback, so a failed proof never becomes the demo member.
     const identity = req.personaIdentity
     try {
       if (identity.error) throw Error(identity.error)
+      if (!Number.isFinite(identity.expiresAt)) throw Error('unauthenticated')
+      // The proof may lapse during the Supabase round trip: no usable socket.
+      if (identity.expiresAt <= Date.now()) {
+        ws.close(memberIdentityModule.AUTH_EXPIRED_CLOSE_CODE, memberIdentityModule.AUTH_EXPIRED_REASON)
+        return
+      }
       memberSession = memberRuntime.connectMember(identity.memberId, personaId, () => { conversationHistory = [] })
     } catch (err) {
       const code = err.message === 'identity_unavailable' ? 1013 : err.message === 'member_store_failure' ? 1011 : 1008
       ws.close(code, 'Member authentication or confidante rejected')
       return
     }
+    // setTimeout overflows past 2^31-1 ms and would fire at once; a lease that
+    // long ends early instead, which still never outlives the proof.
+    leaseDeadline = Math.min(identity.expiresAt, Date.now() + 2 ** 31 - 1)
+    leaseTimer = setTimeout(expireLease, leaseDeadline - Date.now())
   } else if (memberRuntime) {
     try {
       let authorization = req.headers.authorization
@@ -1960,6 +1994,7 @@ wss.on('connection', (ws, req) => {
       const transcript = data.channel?.alternatives?.[0]?.transcript
       if (!transcript) return
       const isFinal = data.is_final
+      if (!leaseLive()) return
       ws.send(JSON.stringify({ type: 'transcript', text: transcript, isFinal }))
       if (isFinal && transcript.trim()) {
         currentTranscript = transcript.trim()
@@ -2008,6 +2043,8 @@ wss.on('connection', (ws, req) => {
     // Metadata only — the raw turn is never written to logs. Length is an
     // operational signal (turn arrived, roughly how big); it cannot reproduce
     // or paraphrase what was said.
+    // A transcript from audio sent before expiry can arrive after it.
+    if (leaseLapsed()) return expireLease()
     const turnStart = Date.now()
     console.log(`[${personaId}] turn received — ${userText.length} chars`)
     const turnToken = speechLifecycle.begin()
@@ -2456,7 +2493,7 @@ wss.on('connection', (ws, req) => {
   // the member's client rendered it. The server cannot establish receipt.
   function sendTextTracked(payload) {
     return new Promise((resolve) => {
-      if (ws.readyState !== WebSocket.OPEN) return resolve(false)
+      if (!leaseLive()) return resolve(false)
       ws.send(payload, (err) => resolve(!err))
     })
   }
@@ -2474,7 +2511,7 @@ wss.on('connection', (ws, req) => {
   // NOTE: true means the server streamed the audio, NOT that the client played it.
   function sendCadenceSilence(ms, token) {
     if (!Number.isInteger(ms) || ms <= 0 || ms > 500 ||
-        !speechLifecycle.current(token) || ws.readyState !== WebSocket.OPEN) return
+        !speechLifecycle.current(token) || !leaseLive()) return
     // Existing transport is mono PCM16 at 16kHz. Silence preserves words and
     // establishes a minimum pause in the ordered audio byte stream.
     ws.send(Buffer.alloc(ms * 32))
@@ -2547,7 +2584,7 @@ wss.on('connection', (ws, req) => {
         const { done, value } = await reader.read()
         if (!speechLifecycle.current(token)) { await reader.cancel(); return false }
         if (done) break
-        if (ws.readyState === WebSocket.OPEN) {
+        if (leaseLive()) {
           // FIX: send the exact chunk bytes (value), not the whole underlying
           // ArrayBuffer (value.buffer). value.buffer can be larger than the chunk
           // and drags trailing bytes that Simli plays as static. This is the
@@ -2587,6 +2624,13 @@ wss.on('connection', (ws, req) => {
     }
   }
 
+  // The socket may carry member content: open, and its lease (if any) has not
+  // lapsed. The timer can fire late; content never goes out past the deadline.
+  function leaseLive() {
+    if (leaseLapsed()) { expireLease(); return false }
+    return ws.readyState === WebSocket.OPEN
+  }
+
   // ── MESSAGE HANDLER ──
   // ws v8 delivers text frames as Buffers too, so routing is by the isBinary
   // flag, not by type or content sniffing. Only binary frames are audio. Every
@@ -2594,6 +2638,9 @@ wss.on('connection', (ws, req) => {
   // the client's {"type":"start"|"stop"} frames, malformed JSON, and non-string
   // content were previously forwarded into the speech-to-text stream.
   ws.on('message', (data, isBinary) => {
+    // The deadline, not the timer, decides: a frame processed after it is never
+    // served, even if the timer has not fired yet or the close is in flight.
+    if (leaseLapsed()) return expireLease()
     if (!isBinary) {
       let msg
       try {
@@ -2679,6 +2726,7 @@ wss.on('connection', (ws, req) => {
   })
 
   ws.on('close', () => {
+    clearTimeout(leaseTimer)
     console.log(`[${personaId}] Closed`)
     speechLifecycle.cancel()
     memberSession?.close()

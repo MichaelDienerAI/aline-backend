@@ -19,6 +19,7 @@ async function run({ flag = '1', persona = 'aline', input = text, compile = comp
     voiceId: 'test', personaKey: persona, process: { env: { ELEVENLABS_API_KEY: 'synthetic' } },
     TTS_REQUEST_TIMEOUT_MS: 1000, AbortController, setTimeout, clearTimeout,
     WebSocket: { OPEN: 1 }, ws: { readyState: 1, send: () => {} }, console,
+    leaseLapsed: () => false, expireLease: () => {},
     sendTextTracked: async s => { events.push(JSON.parse(s)); return true; },
     fetch: async (_url, options) => {
       active++; peak = Math.max(peak, active); payloads.push(JSON.parse(options.body).text);

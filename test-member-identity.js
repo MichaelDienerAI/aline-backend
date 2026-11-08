@@ -251,7 +251,15 @@ function setup(verifierOptions) {
     await check('9. WebSocket upgrade and HTTP resolve the same member for the same user', async () => {
       const viaHttp = await s.identity.authenticate('Bearer ' + tA)
       const viaWs = await up(`${SUBPROTOCOL}, ${tA}`)
-      assert.deepEqual(viaWs, { memberId: viaHttp })
+      assert.deepEqual(viaWs, { memberId: viaHttp, expiresAt: JSON.parse(Buffer.from(tA.split('.')[1], 'base64url')).exp * 1000 })
+    })
+    await check('lease: upgrade carries the verified exp in epoch ms; HTTP still returns only the member', async () => {
+      const exp = Math.floor(Date.now() / 1000) + 2
+      const tS = token({ exp })
+      const s3 = setup({ users: new Map([[tS, USER_A]]) })
+      const viaWs = await s3.identity.verifyUpgrade({ headers: { 'sec-websocket-protocol': `${SUBPROTOCOL}, ${tS}` } })
+      assert.equal(viaWs.expiresAt, exp * 1000)
+      assert.equal(typeof await s3.identity.authenticate('Bearer ' + tS), 'string')
     })
     await check('upgrade without the persona subprotocol defers to existing paths (null)', async () => {
       assert.equal(await up(undefined), null)

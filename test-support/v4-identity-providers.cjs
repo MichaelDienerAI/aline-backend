@@ -1,7 +1,7 @@
 'use strict';
 // Supabase + Simli doubles for synthetic identity runtime fixtures only.
 // Fixture file (IDENTITY_TEST_FIXTURE, re-read on every call):
-//   { users: {<token>: <userId>}, memberships: {<userId>: <status>}, down: bool }
+//   { users: {<token>: <userId>}, memberships: {<userId>: <status>}, down: bool, userDelayMs?: ms }
 // Every call is recorded to IDENTITY_TEST_CAPTURE. All other outbound requests fail.
 const fs = require('node:fs');
 const SUPABASE = 'https://synthetic-supabase.test';
@@ -20,6 +20,7 @@ global.fetch = async (url, opts = {}) => {
   const serviceKeyOk = opts.headers.apikey === process.env.SUPABASE_SERVICE_KEY;
   if (f.down) { log({ type: 'supabase', path: 'down' }); return new Response('raw-supabase-outage-detail', { status: 503 }); }
   if (target === SUPABASE + '/auth/v1/user') {
+    if (f.userDelayMs) await new Promise(r => setTimeout(r, f.userDelayMs));
     const token = (opts.headers.Authorization || '').slice(7);
     log({ type: 'supabase', path: 'user', serviceKeyOk });
     return f.users[token] ? json({ id: f.users[token], aud: 'authenticated' }) : new Response('raw-supabase-jwt-detail', { status: 401 });
