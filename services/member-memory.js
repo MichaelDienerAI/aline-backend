@@ -23,7 +23,9 @@ function openMemoryStore(filename) {
   db.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON;
     CREATE TABLE IF NOT EXISTS members(id TEXT PRIMARY KEY, credential_hash TEXT UNIQUE NOT NULL);
     CREATE TABLE IF NOT EXISTS memories(id TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), body TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS memory_member ON memories(member_id);`);
+    CREATE INDEX IF NOT EXISTS memory_member ON memories(member_id);
+    CREATE TABLE IF NOT EXISTS member_identities(provider TEXT NOT NULL, subject TEXT NOT NULL,
+      member_id TEXT NOT NULL UNIQUE REFERENCES members(id), PRIMARY KEY(provider, subject));`);
   const member = id => { if (!db.prepare('SELECT id FROM members WHERE id=?').get(id)) fail('unknown_member'); };
   const list = id => { member(id); return db.prepare('SELECT body FROM memories WHERE member_id=? ORDER BY rowid').all(id).map(r => JSON.parse(r.body)); };
   const inspect = (id, memoryId) => { member(id); const row = db.prepare('SELECT body FROM memories WHERE member_id=? AND id=?').get(id,memoryId); if (!row) fail('not_found'); return JSON.parse(row.body); };
@@ -68,6 +70,24 @@ function openMemoryStore(filename) {
       if (typeof credential !== 'string' || credential.length > 256) fail('unauthenticated');
       const row = db.prepare('SELECT id FROM members WHERE credential_hash=?').get(hash(credential));
       if (!row) fail('unauthenticated'); return row.id;
+    },
+    // One verified external identity → exactly one member, created on first
+    // use. The new member's credential is random and never returned, so the
+    // credential path cannot reach it. A mapping whose member is missing fails
+    // closed: re-enrolling would orphan that member's memory.
+    externalMember(provider, subject) {
+      if (typeof provider !== 'string' || !provider || typeof subject !== 'string' || !subject || subject.length > 256) fail('invalid_identity');
+      return transaction(() => {
+        const row = db.prepare('SELECT member_id FROM member_identities WHERE provider=? AND subject=?').get(provider,subject);
+        if (row) {
+          if (!db.prepare('SELECT id FROM members WHERE id=?').get(row.member_id)) fail('member_store_failure');
+          return row.member_id;
+        }
+        const id = randomUUID();
+        db.prepare('INSERT INTO members VALUES(?,?)').run(id,hash(randomBytes(32).toString('base64url')));
+        db.prepare('INSERT INTO member_identities VALUES(?,?,?)').run(provider,subject,id);
+        return id;
+      });
     },
     list, inspect, retrieve,
     create(memberId, persona, sessionId, input) {

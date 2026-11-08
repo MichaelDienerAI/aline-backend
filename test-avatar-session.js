@@ -166,10 +166,10 @@ async function main() {
     assert.equal(r.status, 200)
     assert.equal(calls.at(-1).body.faceId, FACE.chase)
   })
-  await check('provider request uses maxSessionLength 900, maxIdleTime 60, apiVersion v2', async () => {
+  await check('provider request uses maxSessionLength 900, maxIdleTime 300, apiVersion v2', async () => {
     const b = calls.at(-1).body
     assert.equal(b.maxSessionLength, 900)
-    assert.equal(b.maxIdleTime, 60)
+    assert.equal(b.maxIdleTime, 300)
     assert.equal(b.apiVersion, 'v2')
     assert.deepEqual(Object.keys(b).sort(), ['apiVersion', 'faceId', 'maxIdleTime', 'maxSessionLength'])
   })

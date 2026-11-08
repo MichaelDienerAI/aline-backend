@@ -1751,9 +1751,27 @@ You are the chambers. The structure that makes deliberation possible because it 
 // legacy mode never exposes it. SIMLI_API_KEY stays server-side (see
 // services/avatar-session). Kept below the HTTP SERVER marker because
 // scripts/rehearsal-core.cjs evaluates the source above it in isolation.
+// Member identity (v4 only): a Supabase access token verified server-side with
+// SUPABASE_URL / SUPABASE_SERVICE_KEY resolves to one Persona member for both
+// the avatar session and the WebSocket. Without that configuration Supabase
+// proofs fail closed; member credentials keep working.
+const memberIdentityModule = require('./services/member-identity')
+const memberIdentity = memberRuntime
+  ? memberIdentityModule.createMemberIdentity({
+      runtime: memberRuntime,
+      verifier: process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY
+        ? memberIdentityModule.createSupabaseVerifier({
+            url: process.env.SUPABASE_URL,
+            serviceKey: process.env.SUPABASE_SERVICE_KEY,
+            fetch: (...args) => fetch(...args),
+          })
+        : null,
+    })
+  : null
+
 const avatarSession = memberRuntime
   ? require('./services/avatar-session').createAvatarSession({
-      memberRuntime,
+      memberRuntime: memberIdentity,
       faceIds: AVATAR_IDS,
       getApiKey: () => process.env.SIMLI_API_KEY,
       fetch: (...args) => fetch(...args),
@@ -1825,7 +1843,20 @@ const server = http.createServer(async (req, res) => {
   }))
 })
 
-const wss = new WebSocket.Server({ server })
+const wss = new WebSocket.Server({
+  server,
+  handleProtocols: memberIdentityModule.selectProtocol,
+  // Supabase identity is verified during the upgrade, so the socket only opens
+  // once its member is known. The upgrade is always accepted; a rejected
+  // identity closes with a policy code in the handler, like the other paths.
+  ...(memberIdentity ? {
+    verifyClient: (info, done) => {
+      memberIdentity.verifyUpgrade(info.req)
+        .then(result => { info.req.personaIdentity = result }, () => { info.req.personaIdentity = { error: 'member_store_failure' } })
+        .then(() => done(true))
+    },
+  } : {}),
+})
 
 // ── CONNECTION HANDLER ────────────────────────────────────────────
 wss.on('connection', (ws, req) => {
@@ -1857,7 +1888,19 @@ wss.on('connection', (ws, req) => {
     (cadenceEnabled ? cadencePass1.COMPOSITION_RULES : '')
   const voiceId = VOICE_IDS[personaId] || VOICE_IDS.aline
   let memberSession = null
-  if (memberRuntime) {
+  if (memberRuntime && req.personaIdentity) {
+    // A Supabase proof was offered: it alone decides. No bridge or credential
+    // fallback, so a failed proof never becomes the demo member.
+    const identity = req.personaIdentity
+    try {
+      if (identity.error) throw Error(identity.error)
+      memberSession = memberRuntime.connectMember(identity.memberId, personaId, () => { conversationHistory = [] })
+    } catch (err) {
+      const code = err.message === 'identity_unavailable' ? 1013 : err.message === 'member_store_failure' ? 1011 : 1008
+      ws.close(code, 'Member authentication or confidante rejected')
+      return
+    }
+  } else if (memberRuntime) {
     try {
       let authorization = req.headers.authorization
 

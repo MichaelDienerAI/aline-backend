@@ -7,7 +7,15 @@ function createMemberRuntime(filename) {
   function connect(authorization, persona, reset) {
     if (!validPersona(persona)) throw Error('invalid_confidante');
     if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) throw Error('unauthenticated');
-    const memberId = store.authenticate(authorization.slice(7));
+    return open(store.authenticate(authorization.slice(7)), persona, reset);
+  }
+  // For a member already resolved from a verified external identity
+  // (services/member-identity). Never call with an unverified id.
+  function connectMember(memberId, persona, reset) {
+    if (!validPersona(persona)) throw Error('invalid_confidante');
+    return open(memberId, persona, reset);
+  }
+  function open(memberId, persona, reset) {
     const session = {memberId,persona,id:randomUUID(),busy:false,pendingSpeech:0,reset}; sessions.add(session);
     return {
       id:session.id,
@@ -57,6 +65,6 @@ function createMemberRuntime(filename) {
     if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) throw Error('unauthenticated');
     return store.authenticate(authorization.slice(7));
   }
-  return {connect, authenticate};
+  return {connect, connectMember, authenticate, externalMember: (provider, subject) => store.externalMember(provider, subject)};
 }
 module.exports = {createMemberRuntime};

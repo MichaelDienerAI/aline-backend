@@ -23,3 +23,6 @@ Thumbs.db
 
 # Local-only private rehearsal evidence (never stage/upload)
 /private-rehearsals/
+
+# Local run records stay local (owner decision 2026-11-07); already-tracked records are unaffected
+/agent-runs/

@@ -4,9 +4,10 @@
 // leaves the server; the browser receives only the session token.
 //
 // Order of checks is the contract: origin → method → credential format →
-// member credential → body (bounded, deadline) → confidante → rate limit →
+// member identity → body (bounded, deadline) → confidante → rate limit →
 // provider. Nothing before the provider step contacts Simli, and no request
-// body is read for an unauthenticated caller.
+// body is read for an unauthenticated caller. memberRuntime.authenticate may
+// be async (Supabase identity, services/member-identity).
 
 const { validPersona } = require('./member-memory');
 
@@ -15,8 +16,11 @@ const PATH = '/v4/avatar-session';
 // the global wildcard CORS used by other routes does not apply here.
 const ALLOWED_ORIGINS = Object.freeze(['https://personaio.app']);
 const SIMLI_TOKEN_URL = 'https://api.simli.ai/compose/token';
-// Product limits for Persona iO v4 avatar sessions.
-const SESSION_LIMITS = Object.freeze({ maxSessionLength: 900, maxIdleTime: 60 });
+// Product limits for Persona iO v4 avatar sessions. Simli's idle timer resets
+// only on detected speech, and the avatar is silent while the member speaks or
+// the model thinks; 60 s ended live sessions mid-conversation. 300 s is
+// Simli's documented default.
+const SESSION_LIMITS = Object.freeze({ maxSessionLength: 900, maxIdleTime: 300 });
 const TOKEN_TTL_SECONDS = 300;
 const MAX_BODY_BYTES = 4096;
 const MAX_PROVIDER_BODY_BYTES = 16_384;
@@ -205,9 +209,12 @@ function createAvatarSession({ memberRuntime, faceIds, getApiKey, fetch, timeout
     // Credential is a header, so it is checked before any body byte is read.
     let memberId;
     try {
-      memberId = memberRuntime.authenticate(authorization);
+      memberId = await memberRuntime.authenticate(authorization);
     } catch (err) {
-      if (err && err.message === 'unauthenticated') return send(res, 401, { error: 'unauthenticated' }, { ...cors, Connection: 'close' });
+      const code = err && (err.code || err.message);
+      if (code === 'unauthenticated') return send(res, 401, { error: 'unauthenticated' }, { ...cors, Connection: 'close' });
+      if (code === 'membership_required') return send(res, 403, { error: 'membership_required' }, { ...cors, Connection: 'close' });
+      if (code === 'identity_unavailable') return send(res, 503, { error: 'identity_unavailable' }, { ...cors, Connection: 'close' });
       logFailure(FAILURE.MEMBER_STORE);
       return send(res, 500, { error: 'internal_error' }, cors);
     }
