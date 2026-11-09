@@ -119,8 +119,8 @@ function createMemberIdentity({ runtime, verifier, now = Date.now, log = console
     },
     // WebSocket upgrade. Browsers cannot set headers on a WebSocket, so the
     // token is offered as the subprotocol after SUBPROTOCOL. Returns null when
-    // no Supabase proof was offered (the existing credential and bridge paths
-    // then apply), otherwise {memberId, expiresAt} (epoch ms) or {error}.
+    // no Supabase proof was offered (the member-credential header path then
+    // applies), otherwise {memberId, expiresAt} (epoch ms) or {error}.
     async verifyUpgrade(req) {
       const header = req.headers['sec-websocket-protocol'];
       if (typeof header !== 'string') return null;

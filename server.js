@@ -1891,7 +1891,7 @@ wss.on('connection', (ws, req) => {
   let memberSession = null
   // Authorization lease (Supabase sockets only): the grant ends at the proof's
   // verified exp. Expiry ends the grant's work and closes the socket; the
-  // member and its memory are untouched. Legacy credential and bridge sockets
+  // member and its memory are untouched. Member-credential sockets
   // have none.
   let leaseDeadline = null
   let leaseTimer = null
@@ -1914,8 +1914,8 @@ wss.on('connection', (ws, req) => {
     }
   }
   if (memberRuntime && req.personaIdentity) {
-    // A Supabase proof was offered: it alone decides. No bridge or credential
-    // fallback, so a failed proof never becomes the demo member.
+    // A Supabase proof was offered: it alone decides. No credential fallback,
+    // so a failed proof never becomes another member.
     const identity = req.personaIdentity
     try {
       if (identity.error) throw Error(identity.error)
@@ -1937,23 +1937,10 @@ wss.on('connection', (ws, req) => {
     leaseTimer = setTimeout(expireLease, leaseDeadline - Date.now())
   } else if (memberRuntime) {
     try {
-      let authorization = req.headers.authorization
-
-      // Monday demo bridge: the browser may present a revocable bridge token,
-      // but the actual member credential remains server-side.
-      const presentedBridge = url.searchParams.get('bridge')
-      const expectedBridge = process.env.PERSONA_DEMO_BRIDGE_TOKEN
-      const demoCredential = process.env.PERSONA_DEMO_MEMBER_CREDENTIAL
-
-      if (!authorization && presentedBridge && expectedBridge && demoCredential) {
-        const presented = Buffer.from(presentedBridge)
-        const expected = Buffer.from(expectedBridge)
-        if (presented.length === expected.length && crypto.timingSafeEqual(presented, expected)) {
-          authorization = `Bearer ${demoCredential}`
-        }
-      }
-
-      memberSession = memberRuntime.connect(authorization, personaId, () => { conversationHistory = [] })
+      // A per-member credential in the Authorization header (non-browser
+      // clients such as the rehearsal harness). Nothing in the URL can
+      // authenticate: the public demo bridge is retired.
+      memberSession = memberRuntime.connect(req.headers.authorization, personaId, () => { conversationHistory = [] })
     } catch {
       ws.close(1008, 'Member authentication or confidante rejected')
       return

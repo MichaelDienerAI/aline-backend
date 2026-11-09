@@ -215,12 +215,10 @@ function closeCode(query, protocols) {
     assert.equal(await closeCode('persona=aline', ['persona.v1', tB]), 1013)
     fixture.down = false; writeFixture()
   })
-  await check('demo bridge without a Supabase proof still reaches only the demo member (unchanged path)', async () => {
-    const r = await connect(`persona=aline&bridge=${BRIDGE}`)
-    assert.ok(r.ws)
-    const created = await control(r.ws, 'create', { memory: { content: 'Synthetic demo record', scope: 'all' } })
-    assert.deepEqual(rows(`SELECT member_id FROM memories WHERE id='${created.result.id}'`), [{ member_id: demo.memberId }])
-    await close(r.ws)
+  await check('retired demo bridge: the old bridge token without a Supabase proof is rejected (1008), demo untouched', async () => {
+    const before = rows(`SELECT COUNT(*) n FROM memories WHERE member_id='${demo.memberId}'`)[0].n
+    assert.equal(await closeCode(`persona=aline&bridge=${BRIDGE}`), 1008)
+    assert.equal(rows(`SELECT COUNT(*) n FROM memories WHERE member_id='${demo.memberId}'`)[0].n, before)
   })
   await check('server stayed up: /health 200', async () => {
     const r = await fetch(`http://127.0.0.1:${port}/health`)

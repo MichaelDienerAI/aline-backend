@@ -199,13 +199,12 @@ const withinMs = (actual, expected, bound) => assert.ok(Math.abs(actual - expect
     assert.equal((await bridged.closed).code, 4401)
     assert.equal(demoMemories(), demoBefore)
   })
-  await check('10. legacy credential and bridge sockets carry no lease and stay open past expiry', async () => {
+  await check('10. member-credential socket carries no lease and stays open past expiry; retired bridge socket was rejected', async () => {
     assert.equal(legacySock.readyState, WebSocket.OPEN)
-    assert.equal(bridgeSock.readyState, WebSocket.OPEN)
     assert.equal((await control(legacySock, 'list')).type, 'memory_result')
-    assert.equal((await control(bridgeSock, 'list')).type, 'memory_result')
-    legacySock.close(); bridgeSock.close()
-    await Promise.all([legacySock.closed, bridgeSock.closed])
+    assert.equal((await bridgeSock.closed).code, 1008)
+    legacySock.close()
+    await legacySock.closed
     assert.equal(leaseEvents().filter(e => e.event === 'arm').length, 7)
   })
   await until(x2.expMs + 400)
