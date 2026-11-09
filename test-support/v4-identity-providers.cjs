@@ -10,6 +10,10 @@ const fixture = () => JSON.parse(fs.readFileSync(process.env.IDENTITY_TEST_FIXTU
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
 global.fetch = async (url, opts = {}) => {
   const target = String(url);
+  if (target === 'https://api.simli.ai/compose/ice') {
+    log({ type: 'simli_ice' });
+    return json([{ urls: 'stun:stun.synthetic.test:3478', username: 'synthetic-ice-user-0123', credential: 'synthetic-ice-credential-NEVER-LOGGED-0123' }, { urls: 'turn:turn.synthetic.test:3478?transport=udp', username: 'synthetic-ice-user-0123', credential: 'synthetic-ice-credential-NEVER-LOGGED-0123' }, { urls: 'turns:turn.synthetic.test:5349?transport=tcp', username: 'synthetic-ice-user-0123', credential: 'synthetic-ice-credential-NEVER-LOGGED-0123' }]);
+  }
   if (target === 'https://api.simli.ai/compose/token') {
     const body = JSON.parse(opts.body);
     log({ type: 'simli', body });

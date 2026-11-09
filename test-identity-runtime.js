@@ -133,7 +133,7 @@ function closeCode(query, protocols) {
   await check('16. browser-facing response holds only provider, sessionToken, expiresInSeconds', async () => {
     const r = await avatar(tB)
     assert.equal(r.status, 200)
-    assert.deepEqual(Object.keys(r.body).sort(), ['expiresInSeconds', 'provider', 'sessionToken'])
+    assert.deepEqual(Object.keys(r.body).sort(), ['expiresInSeconds', 'iceServers', 'provider', 'sessionToken'])
     for (const secret of [SERVICE_KEY, SIMLI_KEY, demo.credential, USER_B, tB]) assert.ok(!r.text.includes(secret))
   })
   await check('13/14/15. Simli request: maxIdleTime 300, maxSessionLength 900, fields unchanged', async () => {

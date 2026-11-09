@@ -1,7 +1,9 @@
 'use strict';
 // v4 avatar-session boundary. An authenticated member asks for one short-lived
-// Simli session token for a confidante. The long-lived SIMLI_API_KEY never
-// leaves the server; the browser receives only the session token.
+// Simli session token for a confidante, plus the ICE servers (STUN and TURN
+// relays with per-request credentials) its peer connection needs. The
+// long-lived SIMLI_API_KEY never leaves the server; the browser receives only
+// the session token and the ICE list.
 //
 // Order of checks is the contract: origin → method → credential format →
 // member identity → body (bounded, deadline) → confidante → rate limit →
@@ -15,7 +17,17 @@ const PATH = '/v4/avatar-session';
 // Exact production frontend origin (Vercel custom domain). Endpoint-only;
 // the global wildcard CORS used by other routes does not apply here.
 const ALLOWED_ORIGINS = Object.freeze(['https://personaio.app']);
+// Extra exact origins (e.g. one approved preview) come from configuration:
+// https scheme, host only, no wildcard, port, path or trailing slash.
+const EXACT_ORIGIN = /^https:\/\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
+function parseAllowedOrigins(extra = '') {
+  const added = String(extra).split(',').map(o => o.trim()).filter(Boolean);
+  return Object.freeze([...new Set([...ALLOWED_ORIGINS, ...added.filter(o => EXACT_ORIGIN.test(o))])]);
+}
 const SIMLI_TOKEN_URL = 'https://api.simli.ai/compose/token';
+const SIMLI_ICE_URL = 'https://api.simli.ai/compose/ice';
+const MAX_ICE_SERVERS = 10;
+const ICE_URL = /^(stun|turn|turns):[^\s]{1,256}$/;
 // Product limits for Persona iO v4 avatar sessions. Simli's idle timer resets
 // only on detected speech, and the avatar is silent while the member speaks or
 // the model thinks; 60 s ended live sessions mid-conversation. 300 s is
@@ -32,6 +44,7 @@ const FAILURE = {
   RATE: 'simli_rate_limited',
   HTTP: 'simli_http_failure',
   MALFORMED: 'simli_malformed_response',
+  ICE: 'simli_ice_failure',
   TIMEOUT: 'simli_timeout',
   TRANSPORT: 'simli_transport_failure',
   KEY_MISSING: 'simli_key_missing',
@@ -168,6 +181,54 @@ function createAvatarSession({ memberRuntime, faceIds, getApiKey, fetch, timeout
     }
   }
 
+  // Simli's ICE list: STUN plus TURN relays whose username/credential Simli
+  // issues per request. Only urls/username/credential of well-formed entries
+  // are passed on; anything else fails the avatar session (no silent
+  // degradation to a browser-side key path).
+  async function ice(apiKey) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      let response;
+      try {
+        response = await fetch(SIMLI_ICE_URL, {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json', 'x-simli-api-key': apiKey },
+          signal: controller.signal,
+        });
+      } catch (err) {
+        return { failure: FAILURE.ICE, status: err && err.name === 'AbortError' ? 504 : 502 };
+      }
+      const providerStatus = response.status;
+      if (!response.ok) {
+        if (response.body) response.body.cancel().catch(() => {});
+        return { failure: FAILURE.ICE, status: 502, providerStatus };
+      }
+      let list;
+      try {
+        list = JSON.parse(await readLimited(response, MAX_PROVIDER_BODY_BYTES, controller.signal));
+      } catch {
+        return { failure: FAILURE.ICE, status: controller.signal.aborted ? 504 : 502, providerStatus };
+      }
+      if (!Array.isArray(list) || list.length === 0 || list.length > MAX_ICE_SERVERS) return { failure: FAILURE.ICE, status: 502, providerStatus };
+      const iceServers = [];
+      for (const entry of list) {
+        const urls = entry && (Array.isArray(entry.urls) ? entry.urls : [entry.urls]);
+        if (!urls || urls.length === 0 || !urls.every(u => typeof u === 'string' && ICE_URL.test(u))) return { failure: FAILURE.ICE, status: 502, providerStatus };
+        const server = { urls };
+        for (const field of ['username', 'credential']) {
+          if (entry[field] === undefined) continue;
+          if (typeof entry[field] !== 'string' || entry[field].length > 512) return { failure: FAILURE.ICE, status: 502, providerStatus };
+          server[field] = entry[field];
+        }
+        iceServers.push(server);
+      }
+      return { iceServers };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // String comparison only: req.url is attacker-controlled and new URL() can
   // throw on it, which here would sit outside the fault boundary below.
   function matches(req) {
@@ -238,12 +299,13 @@ function createAvatarSession({ memberRuntime, faceIds, getApiKey, fetch, timeout
     const apiKey = getApiKey();
     if (!apiKey) { logFailure(FAILURE.KEY_MISSING); return send(res, 503, { error: 'avatar_unavailable' }, cors); }
 
-    const result = await mint(apiKey, faceId);
+    const [result, relay] = await Promise.all([mint(apiKey, faceId), ice(apiKey)]);
     if (!result.token) { logFailure(result.failure, result.providerStatus ?? null); return send(res, result.status, { error: 'avatar_unavailable' }, cors); }
-    return send(res, 200, { provider: 'simli', sessionToken: result.token, expiresInSeconds: TOKEN_TTL_SECONDS }, cors);
+    if (!relay.iceServers) { logFailure(relay.failure, relay.providerStatus ?? null); return send(res, relay.status, { error: 'avatar_unavailable' }, cors); }
+    return send(res, 200, { provider: 'simli', sessionToken: result.token, expiresInSeconds: TOKEN_TTL_SECONDS, iceServers: relay.iceServers }, cors);
   }
 
   return { matches, handle };
 }
 
-module.exports = { createAvatarSession, createRateLimiter, ALLOWED_ORIGINS, PATH, SESSION_LIMITS };
+module.exports = { createAvatarSession, createRateLimiter, parseAllowedOrigins, ALLOWED_ORIGINS, PATH, SESSION_LIMITS };

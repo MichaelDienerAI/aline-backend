@@ -15,7 +15,7 @@ const KEY = 'synthetic-simli-key-0123456789abcdef'
 const TOKEN = 'synthetic-session-token-SHOULD-NEVER-BE-LOGGED-0123456789'
 const PROVIDER_SECRET_BODY = 'provider-detail-SHOULD-NEVER-REACH-CLIENT'
 const ORIGIN = 'https://personaio.app'
-const FACE = { aline: '003760f2-027b-4259-93ef-fbd8cf3ceac3', chase: 'f67abeed-9640-44e6-b49e-2b02a23158f0' }
+const FACE = { aline: '003760f2-027b-4259-93ef-fbd8cf3ceac3', chase: 'cdd8c2c3-6536-45c6-9e99-83879888593f' }
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'persona-avatar-'))
 const dbPath = path.join(dir, 'members.sqlite')
@@ -36,8 +36,18 @@ async function check(name, fn) {
 
 // Scripted provider double. `next` decides the response for the next call.
 const calls = []
+const iceCalls = []
+const ICE_CREDENTIAL = 'synthetic-ice-credential-NEVER-LOGGED-0123'
+const ICE = [{ urls: 'stun:stun.synthetic.test:3478', username: 'synthetic-ice-user-0123', credential: ICE_CREDENTIAL },
+  { urls: ['turn:turn.synthetic.test:3478?transport=udp'], username: 'synthetic-ice-user-0123', credential: ICE_CREDENTIAL }]
 let next = () => new Response(JSON.stringify({ session_token: TOKEN, warnings: [] }), { status: 200 })
+let nextIce = () => new Response(JSON.stringify(ICE), { status: 200 })
+// compose/token calls go to `calls`, compose/ice calls to `iceCalls`.
 async function fakeFetch(url, opts) {
+  if (String(url) === 'https://api.simli.ai/compose/ice') {
+    iceCalls.push({ url: String(url), headers: { ...opts.headers }, method: opts.method })
+    return nextIce(opts)
+  }
   calls.push({ url: String(url), headers: { ...opts.headers }, body: JSON.parse(opts.body), signal: opts.signal })
   return next(opts)
 }
@@ -183,7 +193,7 @@ async function main() {
   await check('response carries only provider, sessionToken, expiresInSeconds; never the key', async () => {
     tick()
     const r = await request({ auth: bearer(), body: { persona: 'aline' } })
-    assert.deepEqual(Object.keys(r.json).sort(), ['expiresInSeconds', 'provider', 'sessionToken'])
+    assert.deepEqual(Object.keys(r.json).sort(), ['expiresInSeconds', 'iceServers', 'provider', 'sessionToken'])
     assert.equal(r.json.provider, 'simli')
     assert.equal(r.json.sessionToken, TOKEN)
     assert.equal(r.json.expiresInSeconds, 300)
