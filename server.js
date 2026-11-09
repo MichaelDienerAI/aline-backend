@@ -1756,6 +1756,7 @@ You are the chambers. The structure that makes deliberation possible because it 
 // the avatar session and the WebSocket. Without that configuration Supabase
 // proofs fail closed; member credentials keep working.
 const memberIdentityModule = require('./services/member-identity')
+const { createAvatarTelemetry } = require('./services/avatar-telemetry')
 const memberIdentity = memberRuntime
   ? memberIdentityModule.createMemberIdentity({
       runtime: memberRuntime,
@@ -1889,6 +1890,8 @@ wss.on('connection', (ws, req) => {
     (cadenceEnabled ? cadencePass1.COMPOSITION_RULES : '')
   const voiceId = VOICE_IDS[personaId] || VOICE_IDS.aline
   let memberSession = null
+  // Avatar lifecycle telemetry from this member's page (allowlisted metadata only).
+  const avatarTelemetry = createAvatarTelemetry({ persona: personaKey })
   // Authorization lease (Supabase sockets only): the grant ends at the proof's
   // verified exp. Expiry ends the grant's work and closes the socket; the
   // member and its memory are untouched. Member-credential sockets
@@ -2641,6 +2644,11 @@ wss.on('connection', (ws, req) => {
           component: 'ws-message', persona: personaKey,
           failure: 'malformed_json_message', fatal: false,
         })}`)
+        return
+      }
+      // Fire-and-forget; only an authenticated member socket reaches this point.
+      if (msg?.type === 'avatar_telemetry') {
+        if (memberSession) avatarTelemetry.record(msg)
         return
       }
       if (msg?.type === 'memory' && memberSession) {
