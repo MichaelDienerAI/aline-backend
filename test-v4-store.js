@@ -41,17 +41,19 @@ try {
  check('cross-member and private-parent derivation rejected',()=>{assert.throws(()=>create('all','chase',{parents:[rel.id]}));assert.throws(()=>create('all','aline',{parents:[same.id]}));});
  check('deletion cascades derived and relationship rows',()=>{const result=store.delete(a.memberId,all.id);assert.equal(result.deletedIds.length,3);for(const id of [all.id,child.id,grandchild.id]){assert.throws(()=>store.inspect(a.memberId,id));for(const p of ['aline','chase'])assert(!visible(id,p));}});
  const root=create('all','aline',{content:'Original'}), derived=create('all','aline',{content:'Stale',parents:[root.id]});
- check('edit invalidates stale derived state',()=>{store.update(a.memberId,root.id,{content:'Edited'});assert.equal(store.inspect(a.memberId,root.id).content,'Edited');assert.throws(()=>store.inspect(a.memberId,derived.id));});
+ const edited=store.correct(a.memberId,root.id,'Edited','aline','synthetic-session');
+ check('correction supersedes and invalidates stale derived state',()=>{assert.equal(store.inspect(a.memberId,edited.id).content,'Edited');assert.equal(store.inspect(a.memberId,root.id).status,'superseded');assert.equal(store.inspect(a.memberId,root.id).content,'Original');assert.throws(()=>store.inspect(a.memberId,derived.id));assert(!visible(root.id,'aline'));});
+ check('content cannot be patched in place',()=>assert.throws(()=>store.update(a.memberId,edited.id,{content:'In place'}),/invalid_patch/));
  check('ownership and provenance cannot be patched',()=>assert.throws(()=>store.update(a.memberId,root.id,{memberId:b.memberId})));
  // Inject a transaction failure after descendant deletion but before parent update.
- const child2=create('all','aline',{content:'Must survive rollback',parents:[root.id]});
+ const child2=create('all','aline',{content:'Must survive rollback',parents:[edited.id]});
  const faultDb=new DatabaseSync(filename);
  faultDb.exec("CREATE TRIGGER fail_update BEFORE UPDATE ON memories BEGIN SELECT RAISE(ABORT, 'synthetic_failure'); END;");
- check('partial persistence failure rolls back all mutations',()=>{assert.throws(()=>store.update(a.memberId,root.id,{content:'Must roll back'}));assert.equal(store.inspect(a.memberId,root.id).content,'Edited');assert.equal(store.inspect(a.memberId,child2.id).content,'Must survive rollback');});
+ check('partial persistence failure rolls back all mutations',()=>{const n=store.list(a.memberId).length;assert.throws(()=>store.correct(a.memberId,edited.id,'Must roll back','aline','synthetic-session'));assert.equal(store.inspect(a.memberId,edited.id).status,'active');assert.equal(store.inspect(a.memberId,child2.id).content,'Must survive rollback');assert.equal(store.list(a.memberId).length,n);});
  faultDb.exec('DROP TRIGGER fail_update');faultDb.close();
  let resets=0;
  const runtime=createMemberRuntime(filename), as=runtime.connect('Bearer '+a.credential,'aline',()=>resets++), cs=runtime.connect('Bearer '+a.credential,'chase',()=>resets++);
- check('mutations reject during active generation including disconnected session',()=>{cs.begin();cs.close();assert.throws(()=>as.control({action:'delete',id:root.id}),/member_busy_retry/);cs.end();as.control({action:'delete',id:root.id});assert.equal(resets,1);});
+ check('mutations reject during active generation including disconnected session',()=>{cs.begin();cs.close();assert.throws(()=>as.control({action:'delete',id:edited.id}),/member_busy_retry/);cs.end();as.control({action:'delete',id:edited.id});assert.equal(resets,1);});
  check('pending speech prevents successful mutation after generation ends',()=>{
   const pending = new Promise(()=>{});
   as.holdSpeech(pending);

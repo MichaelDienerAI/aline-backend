@@ -9,6 +9,8 @@ const validPersona = id => CONFIDANTES.includes(id);
 const fail = code => { const e = new Error(code); e.code = code; throw e; };
 function canConfidanteAccess(memory, memberId, confidanteId) {
   if (!memory || memory.deleted || !validPersona(confidanteId) || memory.memberId !== memberId) return false;
+  // A superseded version is history, never current truth.
+  if (memory.status !== undefined && memory.status !== 'active') return false;
   if (memory.kind === 'relationship' && memory.origin !== confidanteId) return false;
   return memory.scope === 'all' ||
     (memory.scope === 'private' && memory.origin === confidanteId) ||
@@ -27,8 +29,10 @@ function openMemoryStore(filename) {
     CREATE TABLE IF NOT EXISTS member_identities(provider TEXT NOT NULL, subject TEXT NOT NULL,
       member_id TEXT NOT NULL UNIQUE REFERENCES members(id), PRIMARY KEY(provider, subject));`);
   const member = id => { if (!db.prepare('SELECT id FROM members WHERE id=?').get(id)) fail('unknown_member'); };
-  const list = id => { member(id); return db.prepare('SELECT body FROM memories WHERE member_id=? ORDER BY rowid').all(id).map(r => JSON.parse(r.body)); };
-  const inspect = (id, memoryId) => { member(id); const row = db.prepare('SELECT body FROM memories WHERE member_id=? AND id=?').get(id,memoryId); if (!row) fail('not_found'); return JSON.parse(row.body); };
+  // Rows written before supersession existed carry no status: they are active.
+  const parse = body => ({ status:'active', ...JSON.parse(body) });
+  const list = id => { member(id); return db.prepare('SELECT body FROM memories WHERE member_id=? ORDER BY rowid').all(id).map(r => parse(r.body)); };
+  const inspect = (id, memoryId) => { member(id); const row = db.prepare('SELECT body FROM memories WHERE member_id=? AND id=?').get(id,memoryId); if (!row) fail('not_found'); return parse(row.body); };
   function transaction(fn) {
     db.exec('BEGIN IMMEDIATE');
     try { const result = fn(); db.exec('COMMIT'); return result; }
@@ -58,6 +62,15 @@ function openMemoryStore(filename) {
     const doomed = new Set([id]); let changed = true;
     while (changed) { changed = false; for (const m of rows) if (!doomed.has(m.id) && m.parents.some(p => doomed.has(p))) { doomed.add(m.id); changed = true; } }
     return doomed;
+  }
+  // Every version linked to id by correction, in both directions.
+  function versions(rows, id) {
+    const chain = new Set([id]); let changed = true;
+    while (changed) { changed = false; for (const m of rows) {
+      const links = [m.id, m.supersedes, m.supersededBy].filter(Boolean);
+      if (links.some(l => chain.has(l)) && links.some(l => !chain.has(l))) { links.forEach(l => chain.add(l)); changed = true; }
+    } }
+    return chain;
   }
   const removeIds = (memberId, ids) => { const q = db.prepare('DELETE FROM memories WHERE member_id=? AND id=?'); for (const id of ids) q.run(memberId,id); };
   return {
@@ -97,25 +110,51 @@ function openMemoryStore(filename) {
         const now = new Date().toISOString();
         const m = { id:randomUUID(),memberId,content:input.content,kind:input.kind || 'institutional',origin:persona,
           scope:input.scope,permitted:[...new Set(input.permitted || [])],parents:[...new Set(input.parents || [])],
-          source:{type:'member_explicit',sessionId,confidanteId:persona},createdAt:now,updatedAt:now };
+          status:'active',source:{type:'member_explicit',sessionId,confidanteId:persona},createdAt:now,updatedAt:now };
         validate(m);
         const available = new Set(retrieve(memberId,persona).map(r => r.id));
         if (m.parents.some(id => !available.has(id))) fail('unauthorized_parent');
-        const existing = list(memberId).find(r => ['content','kind','origin','scope','permitted','parents'].every(k => JSON.stringify(r[k]) === JSON.stringify(m[k])));
+        const existing = list(memberId).find(r => r.status === 'active' && ['content','kind','origin','scope','permitted','parents'].every(k => JSON.stringify(r[k]) === JSON.stringify(m[k])));
         if (existing) return existing;
         db.prepare('INSERT INTO memories VALUES(?,?,?)').run(m.id,memberId,JSON.stringify(m)); return m;
       });
     },
+    // Access change only; content changes go through correct().
     update(memberId,id,patch) {
-      if (!patch || Object.keys(patch).some(k => !['content','scope','permitted'].includes(k))) fail('invalid_patch');
+      if (!patch || Object.keys(patch).some(k => !['scope','permitted'].includes(k))) fail('invalid_patch');
       return transaction(() => {
-        const before = inspect(memberId,id), after = {...before,...patch,updatedAt:new Date().toISOString()};
+        const before = inspect(memberId,id);
+        if (before.status !== 'active') fail('not_current');
+        const after = {...before,...patch,updatedAt:new Date().toISOString()};
         validate(after);
-        if (after.content !== before.content) { const ids = descendants(list(memberId),id); ids.delete(id); removeIds(memberId,ids); }
         db.prepare('UPDATE memories SET body=? WHERE id=? AND member_id=?').run(JSON.stringify(after),id,memberId); return after;
       });
     },
-    delete(memberId,id) { return transaction(() => { inspect(memberId,id); const ids = descendants(list(memberId),id); removeIds(memberId,ids); return {deletedIds:[...ids]}; }); },
+    // Member correction is a state transition: the active version becomes
+    // superseded history and a new version takes its authority. Records
+    // derived from the old content are removed, as before.
+    correct(memberId,id,content,persona,sessionId) {
+      if (!validPersona(persona)) fail('invalid_confidante');
+      return transaction(() => {
+        const before = inspect(memberId,id);
+        if (before.status !== 'active') fail('not_current');
+        if (content === before.content) return before;
+        const now = new Date().toISOString(), next = randomUUID();
+        const after = {...before,id:next,content,status:'active',supersedes:id,
+          source:{type:'member_correction',sessionId,confidanteId:persona,supersedes:id},createdAt:now,updatedAt:now};
+        validate(after);
+        const ids = descendants(list(memberId),id); ids.delete(id); removeIds(memberId,ids);
+        db.prepare('UPDATE memories SET body=? WHERE id=? AND member_id=?')
+          .run(JSON.stringify({...before,status:'superseded',supersededBy:next,supersededAt:now,updatedAt:now}),id,memberId);
+        db.prepare('INSERT INTO memories VALUES(?,?,?)').run(next,memberId,JSON.stringify(after)); return after;
+      });
+    },
+    // Forgetting removes every version of the record and everything derived from them.
+    delete(memberId,id) { return transaction(() => {
+      inspect(memberId,id); const rows = list(memberId), ids = new Set();
+      for (const v of versions(rows,id)) for (const d of descendants(rows,v)) ids.add(d);
+      removeIds(memberId,ids); return {deletedIds:[...ids]};
+    }); },
     context(memberId,persona) {
       const rows = retrieve(memberId,persona);
       return {institutional:rows.filter(r => r.kind === 'institutional'),relationship:rows.filter(r => r.kind === 'relationship')};

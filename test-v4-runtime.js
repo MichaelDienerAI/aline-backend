@@ -77,13 +77,13 @@ function speech(t,persona){const frames=t.events.filter(e=>e.type==='response_te
  check('Journey D rescope clears existing Chase session history and recall',()=>{assert(!ids(afterRescope).includes(shared.id));noContent(afterRescope,shared.content);assert.equal(model(afterRescope).messages.length,2);});
  const ra=await turn(aline,'What do you remember?');check('Journey D Aline retains same semantic fact',()=>assert(ids(ra).includes(shared.id)));
  const list=await control(aline,'list');check('member can inspect retained records',()=>assert(list.result.some(m=>m.id===shared.id)));
- await control(aline,'edit',{id:shared.id,content:'The member is considering moving to Lisbon in two years.'});
- const inspected=await control(aline,'inspect',{id:shared.id});check('member edit affects canonical record',()=>assert(inspected.result.content.includes('two years')));
- await control(aline,'rescope',{id:shared.id,scope:'all'});
- const derived=await create(chase,'Derived Lisbon deliberation.','private',{kind:'relationship',parents:[shared.id]});
- await control(aline,'delete',{id:shared.id});
+ const edited=(await control(aline,'edit',{id:shared.id,content:'The member is considering moving to Lisbon in two years.'})).result;
+ const inspected=await control(aline,'inspect',{id:edited.id});check('member edit supersedes the canonical record',()=>{assert(inspected.result.content.includes('two years'));assert.equal(inspected.result.supersedes,shared.id);});
+ await control(aline,'rescope',{id:edited.id,scope:'all'});
+ const derived=await create(chase,'Derived Lisbon deliberation.','private',{kind:'relationship',parents:[edited.id]});
+ await control(aline,'delete',{id:edited.id});
  await close(aline);await close(chase);
- for(const p of ['aline','chase']){const ws=await connect(a,p),t=await turn(ws,'What remains?');check('Journey E fresh '+p+' deletion cascades',()=>{assert(!ids(t).includes(shared.id));assert(!ids(t).includes(derived.id));noContent(t,inspected.result.content);noContent(t,derived.content);assert(!response(t).includes('Lisbon'));});await close(ws);}
+ for(const p of ['aline','chase']){const ws=await connect(a,p),t=await turn(ws,'What remains?');check('Journey E fresh '+p+' deletion cascades',()=>{assert(!ids(t).includes(shared.id));assert(!ids(t).includes(edited.id));noContent(t,shared.content);assert(!ids(t).includes(derived.id));noContent(t,inspected.result.content);noContent(t,derived.content);assert(!response(t).includes('Lisbon'));});await close(ws);}
  for(const p of ['aline','chase']){const ws=await connect(b,p),t=await turn(ws,'What do you know?');check('Journey F '+p+' member isolation',()=>{assert.deepEqual(ids(t),[]);noContent(t,secret.content);noContent(t,ar.content);noContent(t,cr.content);});
  for (const action of ['delete','edit','rescope']) {
  const denied=await control(ws,action,{id:secret.id,content:'Unauthorized',scope:'all'});
