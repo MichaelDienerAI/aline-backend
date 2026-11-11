@@ -13,7 +13,7 @@ async function run({ flag = '1', persona = 'aline', input = text, compile = comp
   const payloads = [], events = [], evaluations = [];
   let active = 0, peak = 0;
   const lifecycle = require('./services/speech-lifecycle').createSpeechLifecycle();
-  const context = { speechLifecycle:lifecycle,turnToken:lifecycle.begin(),turnProfile:null,memberSession: null, ...policy, cadenceEnabled: cadence.isEnabled(persona, { ALINE_CADENCE_V1: flag }),
+  const context = { speechLifecycle:lifecycle,turnToken:lifecycle.begin(),turnProfile:null,memberSession: null, ...policy, ...require('./services/response-ceiling'), cadenceEnabled: cadence.isEnabled(persona, { ALINE_CADENCE_V1: flag }),
     cadencePass1: { compileCanonical: s => cadence.compileCanonical(s, compile) },
     evaluateReleaseSafe: s => { evaluations.push(s); return rejectSpoken && evaluations.length === 2 ? { approved: false } : policy.evaluateReleaseSafe(s); },
     voiceId: 'test', personaKey: persona, process: { env: { ELEVENLABS_API_KEY: 'synthetic' } },

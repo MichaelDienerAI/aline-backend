@@ -12,6 +12,7 @@ const {
 } = require('./services/release-policy')
 const crypto = require('crypto')
 const { modelOptions, continuationMessages } = require('./services/model-request')
+const { takeFinishedSentences, modelResponseLog } = require('./services/response-ceiling')
 const cadencePass1 = require('./services/cadence-pass1')
 const cadenceProfiles = require('./services/cadence-profiles')
 const { createSpeechLifecycle } = require('./services/speech-lifecycle')
@@ -2230,6 +2231,8 @@ wss.on('connection', (ws, req) => {
         if (typeof activeStream.on === 'function') activeStream.on('error', () => {})
 
         const untrackStream = speechLifecycle.track(turnToken, () => activeStream.abort?.())
+        let stopReason = null
+        let outputTokens = null
         let buffer = ''
         let checkingPrefix = !!approvedPrefix
         let needsSeparator = !!approvedPrefix
@@ -2241,6 +2244,11 @@ wss.on('connection', (ws, req) => {
         try {
         for await (const chunk of activeStream) {
           if (!speechLifecycle.current(turnToken)) return { cancelled: true }
+          if (chunk.type === 'message_delta') {
+            if (chunk.delta?.stop_reason) stopReason = chunk.delta.stop_reason
+            if (Number.isFinite(chunk.usage?.output_tokens)) outputTokens = chunk.usage.output_tokens
+            continue
+          }
           if (chunk.type !== 'content_block_delta') continue
           if (chunk.delta.type !== 'text_delta') continue
           buffer += chunk.delta.text
@@ -2266,6 +2274,25 @@ wss.on('connection', (ws, req) => {
         }
 
         if (!speechLifecycle.current(turnToken)) return { cancelled: true }
+        // At the max_tokens ceiling the model stopped mid-thought. Release only
+        // the sentences it finished; the unfinished fragment is never shown or
+        // spoken, and history keeps only what the member received.
+        if (stopReason === 'max_tokens') {
+          const { sentences } = takeFinishedSentences(buffer)
+          for (let sentence of sentences) {
+            sentence = continuationSegment(sentence)
+            const auth = authorizeSegment(sentence)
+            if (!auth.approved) return { blocked: true, verdict: auth.verdict, channel: auth.channel }
+            await releaseSegment(sentence, auth.spoken, auth.cadence)
+          }
+          // No sentence finished at all: silence is not an acceptable terminal
+          // state, so the member receives the approved fallback.
+          if (!releasedText.trim()) {
+            const auth = authorizeSegment(APPROVED_FALLBACK)
+            if (auth.approved) await releaseSegment(APPROVED_FALLBACK, auth.spoken, auth.cadence)
+          }
+          return { blocked: false, verdict: null }
+        }
         // Trailing fragment. Length, not trim(): a whitespace-only tail still
         // has to be released, or the delivered bytes stop matching what the
         // model produced and history drifts from the transcript. enqueueTTS
@@ -2277,7 +2304,10 @@ wss.on('connection', (ws, req) => {
           await releaseSegment(buffer, auth.spoken, auth.cadence)
         }
         return { blocked: false, verdict: null }
-        } finally { untrackStream() }
+        } finally {
+          untrackStream()
+          console.log(modelResponseLog(personaKey, stopReason, outputTokens))
+        }
       }
 
       const stream = await anthropic.messages.stream(streamConfig)
