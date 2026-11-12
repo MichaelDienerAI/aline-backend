@@ -69,7 +69,7 @@ const VOICE_IDS = {
 }
 
 const AVATAR_IDS = {
-  aline: 'bc0fe27a-ca88-4dd8-a205-9be134804ae7',
+  aline: 'dd53cea2-639d-4bfd-b401-3f2282157a87',
   chase: 'cdd8c2c3-6536-45c6-9e99-83879888593f',
 }
 
