@@ -13,8 +13,8 @@ const { spawn } = require('node:child_process')
 const { openMemoryStore } = require('./services/member-memory')
 const { createAvatarSession, createRateLimiter, parseAllowedOrigins } = require('./services/avatar-session')
 
-// The approved face for each confidante (frontend-approved; Chase cdd8c2c3...).
-const APPROVED_FACES = Object.freeze({ aline: 'dd53cea2-639d-4bfd-b401-3f2282157a87', chase: 'cdd8c2c3-6536-45c6-9e99-83879888593f' })
+// The approved face for each confidante (frontend-approved; Chase b575ab08...).
+const APPROVED_FACES = Object.freeze({ aline: 'dd53cea2-639d-4bfd-b401-3f2282157a87', chase: 'b575ab08-c2a1-4dbf-8333-815a400449f8' })
 const KEY = 'synthetic-simli-key-ice-NEVER-IN-RESPONSE-0123'
 const TOKEN = 'synthetic-session-token-ice-0123456789'
 const ICE_CREDENTIAL = 'synthetic-ice-credential-0123456789'

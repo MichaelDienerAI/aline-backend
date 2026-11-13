@@ -17,7 +17,7 @@ const modeFile = path.join(dir, 'mode')
 const KEY = 'synthetic-simli-key-runtime-0123456789'
 const TOKEN = 'synthetic-runtime-session-token-NEVER-LOGGED-0123456789'
 const ORIGIN = 'https://personaio.app'
-const FACE = { aline: 'dd53cea2-639d-4bfd-b401-3f2282157a87', chase: 'cdd8c2c3-6536-45c6-9e99-83879888593f' }
+const FACE = { aline: 'dd53cea2-639d-4bfd-b401-3f2282157a87', chase: 'b575ab08-c2a1-4dbf-8333-815a400449f8' }
 const port = 5300 + (process.pid % 500)
 
 const store = openMemoryStore(dbPath)
