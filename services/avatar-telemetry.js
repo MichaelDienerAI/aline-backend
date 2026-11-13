@@ -28,6 +28,13 @@ const EVENTS = new Set([
   ...['audio', 'video'].flatMap(k => ['ended', 'mute', 'unmute'].map(e => `avatar_${k}_track_${e}`)),
   'avatar_signal_closed', 'avatar_signal_error', 'avatar_signal_event',
   'avatar_snapshot', 'avatar_observe_unavailable',
+  // Continuity (the page's runAvatarSession and room): pre-cap rotation
+  // (planned, started, standby ready, swapped, abandoned), recovery of a
+  // session that ended mid-reply, the idle hold, reply audio held when a
+  // session ends and flushed (resumed) into the next, and video frame stalls.
+  'avatar_rotate_scheduled', 'avatar_rotate_start', 'avatar_rotate_ready', 'avatar_rotate_done', 'avatar_rotate_abandoned',
+  'avatar_recovery_start', 'avatar_recovery_done', 'avatar_idle_hold',
+  'avatar_audio_held', 'avatar_audio_flush', 'avatar_video_stall', 'avatar_video_resume',
 ]);
 
 const TRACK_STATES = ['live', 'muted', 'ended', 'none'];
@@ -42,7 +49,8 @@ const ENUMS = Object.freeze({
     // terminal lifecycle states, observer gaps
     'auth_failed', 'unavailable', 'unsupported_transport',
   ],
-  reason: ['retry', 'refresh', 'resume', 'lost', 'short_session', 'healthy', 'unmount', 'replaced'],
+  reason: ['retry', 'refresh', 'resume', 'lost', 'short_session', 'healthy', 'unmount', 'replaced',
+    'rotate', 'rotated', 'recover', 'idle'],
   pc: [...PC_STATES, 'none'],
   ice: [...ICE_STATES, 'none'],
   ws: ['connecting', 'open', 'closing', 'closed', 'none'],
@@ -54,6 +62,14 @@ const INTS = Object.freeze({
   t: [0, 86400000],        // ms since that mint succeeded
   code: [0, 4999],         // signaling WebSocket close code
   status: [0, 599],        // /v4/avatar-session HTTP status; 0 = no response
+  ms: [0, 86400000],       // a duration: recovery, rotation, or a video stall
+  frame_age: [0, 86400000], // ms since the avatar's last video frame
+  audio_age: [0, 86400000], // ms since reply audio last arrived
+  bytes: [0, 50000000],    // held reply audio handed to a new session (a count only)
+  held_ms: [0, 86400000],  // playing time of that held audio
+  age: [0, 86400000],      // ms since the avatar session concerned started
+  due: [0, 86400000],      // ms until a planned rotation check
+  attempt: [0, 99],        // consecutive failed avatar attempt number
 });
 const SID = /^[0-9a-f]{12}$/;
 const MAX_EVENTS = 300;

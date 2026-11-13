@@ -232,6 +232,36 @@ const frame = (event, extra = {}) => JSON.stringify({ type: 'avatar_telemetry', 
     }
   })
 
+  await check('7. continuity events (rotation, recovery, idle hold, audio flush, frame stalls) pass with bounded numbers only', async () => {
+    const { sanitizeAvatarTelemetry } = require('./services/avatar-telemetry')
+    assert.deepEqual(sanitizeAvatarTelemetry({ sid: SID, event: 'avatar_recovery_done', mint: 3, t: 5, reason: 'recover', ms: 2400 }),
+      { sid: SID, event: 'avatar_recovery_done', mint: 3, t: 5, ms: 2400, reason: 'recover' })
+    assert.deepEqual(sanitizeAvatarTelemetry({ sid: SID, event: 'avatar_video_stall', frame_age: 1800, audio_age: 300 }),
+      { sid: SID, event: 'avatar_video_stall', frame_age: 1800, audio_age: 300 })
+    assert.deepEqual(sanitizeAvatarTelemetry({ sid: SID, event: 'avatar_audio_flush', bytes: 64000 }),
+      { sid: SID, event: 'avatar_audio_flush', bytes: 64000 })
+    for (const e of ['avatar_rotate_start', 'avatar_rotate_done', 'avatar_rotate_abandoned', 'avatar_recovery_start', 'avatar_idle_hold', 'avatar_video_resume'])
+      assert.ok(sanitizeAvatarTelemetry({ sid: SID, event: e }), e)
+    // Content in a numeric or enum field is dropped, never logged.
+    assert.deepEqual(sanitizeAvatarTelemetry({ sid: SID, event: 'avatar_rotate_done', ms: SENTINEL.memberSpeech, bytes: -1, reason: SENTINEL.transcript }),
+      { sid: SID, event: 'avatar_rotate_done' })
+  })
+
+  await check('8. continuity timing metadata (session age, planned rotation, standby ready, retry number, held audio) passes bounded', async () => {
+    const { sanitizeAvatarTelemetry } = require('./services/avatar-telemetry')
+    assert.deepEqual(sanitizeAvatarTelemetry({ sid: SID, event: 'avatar_rotate_scheduled', reason: 'rotate', due: 780000, age: 0 }),
+      { sid: SID, event: 'avatar_rotate_scheduled', age: 0, due: 780000, reason: 'rotate' })
+    assert.deepEqual(sanitizeAvatarTelemetry({ sid: SID, event: 'avatar_rotate_ready', reason: 'rotate', ms: 2500 }),
+      { sid: SID, event: 'avatar_rotate_ready', ms: 2500, reason: 'rotate' })
+    assert.deepEqual(sanitizeAvatarTelemetry({ sid: SID, event: 'avatar_audio_held', bytes: 64000, held_ms: 2000 }),
+      { sid: SID, event: 'avatar_audio_held', bytes: 64000, held_ms: 2000 })
+    assert.deepEqual(sanitizeAvatarTelemetry({ sid: SID, event: 'avatar_page_stop', reason: 'lost', age: 901000, attempt: 2 }),
+      { sid: SID, event: 'avatar_page_stop', age: 901000, attempt: 2, reason: 'lost' })
+    // Content in the new numeric fields is dropped, never logged.
+    assert.deepEqual(sanitizeAvatarTelemetry({ sid: SID, event: 'avatar_audio_held', held_ms: SENTINEL.memberSpeech, age: SENTINEL.transcript, due: 'soon', attempt: '2' }),
+      { sid: SID, event: 'avatar_audio_held' })
+  })
+
   fs.rmSync(dir, { recursive: true, force: true })
   console.log(`\n${passed} passed, ${failed} failed`)
   process.exit(failed ? 1 : 0)
